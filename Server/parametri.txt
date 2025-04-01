@@ -1,0 +1,6 @@
+UCamera
+-----------------
+
+SSH port 22
+login: admin
+pass: ucamera

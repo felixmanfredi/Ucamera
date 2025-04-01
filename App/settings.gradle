@@ -1,0 +1,2 @@
+rootProject.name = "MCS4"
+include ':app'

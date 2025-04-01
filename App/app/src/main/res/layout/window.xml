@@ -1,0 +1,292 @@
+<?xml version="1.0" encoding="utf-8"?>
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    xmlns:tools="http://schemas.android.com/tools"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:orientation="vertical"
+    android:weightSum="1"
+
+
+    >
+    <FrameLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+
+
+        >
+
+        <LinearLayout
+            android:id="@+id/main_panel"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:orientation="vertical"
+            >
+            <FrameLayout
+                android:id="@+id/windowbar"
+                android:layout_width="match_parent"
+                android:layout_height="22dp"
+                android:background="#2596be"
+                >
+                <ImageView
+                    android:layout_width="18dp"
+                    android:layout_height="18dp"
+                    android:layout_marginLeft="2dp"
+                    android:layout_marginTop="2dp"
+                    android:background="@mipmap/ic_launcher">
+                </ImageView>
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginLeft="22dp"
+                    android:textColor="@color/white"
+                    android:text="3D Research UCamera 1.1">
+
+                </TextView>
+
+                <TextView
+                    android:id="@+id/depth"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginLeft="200dp"
+                    android:textColor="@color/white"
+                    android:text="0.0 metri">
+
+                </TextView>
+                <Button
+                    android:id="@+id/btn_collapse"
+                    android:layout_width="18dp"
+                    android:layout_height="18dp"
+                    android:layout_gravity="end"
+                    android:layout_marginTop="2dp"
+                    android:layout_marginRight="2dp"
+                    android:backgroundTint="@color/white"
+                    android:background="@drawable/down">
+
+                </Button>
+            </FrameLayout>
+
+            <!-- Toolbar -->
+            <FrameLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:background="@color/white"
+                >
+                <LinearLayout
+                    android:id="@+id/body"
+                    android:layout_width="match_parent"
+                    android:layout_height="match_parent"
+                    android:orientation="horizontal">
+
+
+
+                    <FrameLayout
+                        android:layout_width="wrap_content"
+                        android:layout_height="match_parent"
+                        >
+                        <WebView
+                            android:id="@+id/preview"
+                            android:layout_width="150dp"
+                            android:layout_height="match_parent">
+
+                        </WebView>
+                        <ImageView
+                            android:id="@+id/recording"
+                            android:layout_height="20dp"
+                            android:layout_width="20dp"
+                            android:layout_marginTop="10dp"
+                            android:layout_marginLeft="10dp"
+                            android:src="@drawable/rectangle"
+                            android:visibility="gone"
+
+                            >
+                        </ImageView>
+
+                        <TextView
+                            android:id="@+id/status"
+                            android:textSize="7pt"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:width="140dp"
+                            android:layout_marginTop="10dp"
+                            android:textAlignment="textEnd"
+                            android:textColor="@color/white"
+                            android:textFontWeight="@integer/material_motion_duration_long_1"
+                            android:text="Status"></TextView>
+                    </FrameLayout>
+
+
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:orientation="vertical"
+                        >
+
+
+
+                        <Button
+                            android:id="@+id/btn_open_acquisition"
+                            android:layout_width="match_parent"
+                            android:layout_height="40dp"
+
+                            android:text="Acquisizione"></Button>
+                        <Button
+                            android:id="@+id/btn_open_config"
+                            android:layout_width="match_parent"
+                            android:layout_height="40dp"
+                            android:text="Parametri"></Button>
+                        <Button
+                            android:id="@+id/btn_open_other"
+                            android:layout_width="match_parent"
+                            android:layout_height="40dp"
+                            android:text="Altro"></Button>
+
+
+                    </LinearLayout>
+
+                </LinearLayout>
+
+            </FrameLayout>
+
+            <!-- Acquisizioni -->
+            <FrameLayout
+                android:id="@+id/acquisition_panel"
+                android:background="@color/white"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+
+                android:visibility="gone"
+                >
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="vertical"
+                    >
+
+                    <include android:id="@+id/interval_control" layout="@layout/layout_param"></include>
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content">
+                        <Button
+                            android:id="@+id/btn_start_acquisition"
+                            android:layout_width="wrap_content"
+                            android:layout_height="match_parent"
+                            android:text="Avvia Scatto Fotografico">
+
+
+                        </Button>
+                        <Button
+                            android:id="@+id/btn_start_video"
+                            android:layout_width="wrap_content"
+                            android:layout_height="match_parent"
+                            android:text="Avvia Video">
+
+
+                        </Button>
+                    </LinearLayout>
+
+
+
+                </LinearLayout>
+
+
+
+
+            </FrameLayout>
+
+            <!-- Impostazioni -->
+            <ScrollView
+                android:id="@+id/settings_panel"
+                android:background="@color/white"
+                android:layout_width="match_parent"
+                android:layout_height="150dp"
+
+                android:visibility="gone"
+                >
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="match_parent"
+                    android:orientation="vertical"
+
+                    >
+
+                    <include android:id="@+id/brightness_control" layout="@layout/layout_param"></include>
+                    <include android:id="@+id/contrast_control" layout="@layout/layout_param"></include>
+                    <include android:id="@+id/sharpness_control" layout="@layout/layout_param"></include>
+                    <include android:id="@+id/saturation_control" layout="@layout/layout_param"></include>
+                    <include android:id="@+id/lensposition_control" layout="@layout/layout_param"></include>
+                    <include android:id="@+id/exposure_control" layout="@layout/layout_param"></include>
+                    <include android:id="@+id/exposuretime_control" layout="@layout/layout_param"></include>
+                    <include android:id="@+id/gain_control" layout="@layout/layout_param"></include>
+
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        >
+                        <Button
+                            android:id="@+id/btn_preview_image"
+                            android:layout_width="wrap_content"
+                            android:layout_height="match_parent"
+                            android:text="Scatto di prova">
+
+                        </Button>
+                        <Button
+                            android:id="@+id/btn_reset_settings"
+                            android:layout_width="wrap_content"
+                            android:layout_height="match_parent"
+                            android:text="Reset">
+
+                        </Button>
+
+                    </LinearLayout>
+
+
+                </LinearLayout>
+
+
+
+
+
+
+            </ScrollView>
+
+            <!-- Altro -->
+            <FrameLayout
+                android:id="@+id/other_panel"
+                android:background="@color/white"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+
+                android:visibility="gone"
+                >
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="match_parent"
+                    android:orientation="vertical">
+                    <Button
+                        android:id="@+id/btn_refresh_preview"
+                        android:layout_width="match_parent"
+                        android:layout_height="40dp"
+                        android:text="Aggiorna connessione"></Button>
+
+                    <Button
+                        android:id="@+id/btn_quit"
+                        android:layout_width="match_parent"
+                        android:layout_height="40dp"
+                        android:text="Esci"></Button>
+
+                </LinearLayout>
+
+            </FrameLayout>
+
+
+        </LinearLayout>
+
+    </FrameLayout>
+
+
+
+</FrameLayout>
