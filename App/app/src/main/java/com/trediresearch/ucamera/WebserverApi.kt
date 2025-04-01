@@ -43,7 +43,7 @@ interface WebserverApi {
     @ResponseFormat("application/json")
     fun stopDataset():Call<response<Nothing>>
 
-    @POST("datasets/start/")
+    @POST("datasets/start_video/")
     @RequestFormat(ConverterFormat.JSON)
     @ResponseFormat("application/json")
     fun startVideo(@Body body:dataset):Call<response<dataset>>

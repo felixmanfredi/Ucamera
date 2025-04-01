@@ -629,6 +629,7 @@ class Window(private val context: Context) {
            d.datasetname= LocalDate.now().toString()
 
            if(!video){
+               d.interval = interval; //Set interval
                if(api.startDataset(d)>-1) {
                    setAcquisitionState(true)
                }else{
@@ -700,12 +701,12 @@ class Window(private val context: Context) {
 
                 setAcquisitionState(true)
                 var dataset=row as JSONObject
-                Handler(Looper.getMainLooper()).post {
-                    status.text = "Dataset " + dataset.getJSONObject("current_camera_acquisition")
-                        .get("dataset_id")
-                        .toString() + " Foto " + dataset.getJSONObject("current_camera_acquisition")
-                        .get("items").toString()
-                }
+                var acquisition = dataset.getJSONObject("current_camera_acquisition")
+                if (acquisition.length() != 0)
+                    Handler(Looper.getMainLooper()).post {
+                        status.text = "Dataset " + acquisition.get("dataset_id").toString() +
+                                " Foto " + acquisition.get("items").toString()
+                    }
             }
 
         });
