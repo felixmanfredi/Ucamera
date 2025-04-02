@@ -26,7 +26,7 @@ data class dataset(
     @SerializedName("dataset_id") var dataset_id:Int=0,
     @SerializedName("datasetname") var datasetname:String="",
     @SerializedName("description") var description:String="",
-    @SerializedName("interval") var interval:Int=3,
+    @SerializedName("interval") var interval: Double?=5.0,
 
 
 

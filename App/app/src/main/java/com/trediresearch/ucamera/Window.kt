@@ -40,7 +40,7 @@ class Window(private val context: Context) {
     val windowHeight=150
     val windowHeightMax=900
     val windowWidth=270
-    var interval=5
+    var interval=5.0
     var camera_connected=false;
     var OnCameraConnected=false;
 
@@ -77,6 +77,7 @@ class Window(private val context: Context) {
 
     lateinit var btn_open_acquisition:Button
     lateinit var btn_open_config:Button
+    lateinit var btn_upload_firmware:Button
     val EXPOSURE_TIME_LABEL= arrayListOf<String>("1/2","1/4","1/8","1/15","1/30","1/60","1/125","1/250","1/500","1/1000","1/2000")
     val EXPOSURE_TIME= arrayListOf<Int>(453000,250000,125000,66666,33333,16666,8000,4000,2000,1000,500)
 
@@ -198,6 +199,7 @@ class Window(private val context: Context) {
         recording= rootView.findViewById(R.id.recording) as ImageView
         btn_start_acquisition=rootView.findViewById(R.id.btn_start_acquisition) as Button
         btn_start_video=rootView.findViewById(R.id.btn_start_video) as Button
+        btn_upload_firmware=rootView.findViewById(R.id.btn_upload_firmware) as Button
 
         btn_preview_image=rootView.findViewById(R.id.btn_preview_image) as Button
 
@@ -367,15 +369,15 @@ class Window(private val context: Context) {
 
 
         interval_control.findViewById<Button>(R.id.btn_plus).setOnClickListener {
-            if(interval < 20) {
-                interval=interval+1
+            if(interval < 20.0) {
+                interval=interval+0.5
                 updateValues()
             }
         }
 
         interval_control.findViewById<Button>(R.id.btn_minus).setOnClickListener {
-            if(interval > 0) {
-                interval =interval -1;
+            if(interval > 0.0) {
+                interval =interval -0.5;
                 updateValues()
             }
         }
@@ -430,10 +432,12 @@ class Window(private val context: Context) {
 
         }
 
-
-        btn_open_config.setOnClickListener{
+        btn_upload_firmware.setOnClickListener{
             val u:Uploader=Uploader()
             u.uploadFirmware()
+        }
+
+        btn_open_config.setOnClickListener{
             openConfig()
         }
 
@@ -629,7 +633,7 @@ class Window(private val context: Context) {
            d.datasetname= LocalDate.now().toString()
 
            if(!video){
-               d.interval = interval; //Set interval
+               d.interval = if (interval > 0.0) interval else null; //Set interval
                if(api.startDataset(d)>-1) {
                    setAcquisitionState(true)
                }else{
@@ -651,11 +655,13 @@ class Window(private val context: Context) {
             if (state) {
                 recording.visibility=ImageView.VISIBLE
                 btn_start_acquisition.text = "Ferma"
+                btn_start_video.visibility= ImageView.GONE
                 onAcquisition = true
             } else {
                 status.text = "Ready"
                 recording.visibility=ImageView.GONE
-                btn_start_acquisition.text = "Avvia"
+                btn_start_acquisition.text = "Avvia Scatto Foto"
+                btn_start_video.visibility= ImageView.VISIBLE
                 onAcquisition = false
             }
         }
@@ -698,15 +704,17 @@ class Window(private val context: Context) {
         s.socket.on("datasets_storage_status", Emitter.Listener { it->
             it.forEach {
                     row->
-
-                setAcquisitionState(true)
                 var dataset=row as JSONObject
                 var acquisition = dataset.getJSONObject("current_camera_acquisition")
-                if (acquisition.length() != 0)
+                if (acquisition.length() != 0) {
+                    setAcquisitionState(true)
                     Handler(Looper.getMainLooper()).post {
                         status.text = "Dataset " + acquisition.get("dataset_id").toString() +
                                 " Foto " + acquisition.get("items").toString()
                     }
+                } else {
+                    setAcquisitionState(false)
+                }
             }
 
         });

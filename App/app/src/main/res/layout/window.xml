@@ -168,11 +168,12 @@
                     <LinearLayout
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content">
+
                         <Button
                             android:id="@+id/btn_start_acquisition"
                             android:layout_width="wrap_content"
                             android:layout_height="match_parent"
-                            android:text="Avvia Scatto Fotografico">
+                            android:text="Avvia Scatto Foto">
 
 
                         </Button>
@@ -266,11 +267,18 @@
                     android:layout_width="match_parent"
                     android:layout_height="match_parent"
                     android:orientation="vertical">
+
                     <Button
                         android:id="@+id/btn_refresh_preview"
                         android:layout_width="match_parent"
                         android:layout_height="40dp"
                         android:text="Aggiorna connessione"></Button>
+
+                    <Button
+                        android:id="@+id/btn_upload_firmware"
+                        android:layout_width="match_parent"
+                        android:layout_height="40dp"
+                        android:text="Update Firmware"></Button>
 
                     <Button
                         android:id="@+id/btn_quit"
