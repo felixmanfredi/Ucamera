@@ -74,6 +74,7 @@ class Window(private val context: Context) {
     lateinit var btn_collapse:Button
     lateinit var preview:WebView
     lateinit var status:TextView
+    lateinit var depth:TextView
     lateinit var recording:ImageView
 
     lateinit var btn_open_acquisition:Button
@@ -211,6 +212,7 @@ class Window(private val context: Context) {
         preview=rootView.findViewById(R.id.preview) as WebView
         //rectimage=rootView.findViewById(R.id.rect) as ImageView
         status=rootView.findViewById(R.id.status) as TextView
+        depth=rootView.findViewById(R.id.depth) as TextView
         brightness_control.findViewById<TextView>(R.id.label).text="Luminosità"
         contrast_control.findViewById<TextView>(R.id.label).text="Contrasto"
         sharpness_control.findViewById<TextView>(R.id.label).text="Nitidezza"
@@ -721,6 +723,23 @@ class Window(private val context: Context) {
                 }
 
             });
+
+            s.socket.on("location_status", Emitter.Listener{ it ->
+                it.forEach {
+                    row->
+                    var location = row as JSONObject
+                    var altitude = location.getJSONArray("altitude")
+                    if (altitude.getString(1) == "BSL") {
+                        val altitudeValue = altitude.getDouble(0)
+                        Handler(Looper.getMainLooper()).post {
+                            depth.text = "%.2f metri".format(altitudeValue)
+                        }
+                    }
+
+
+                }
+
+            })
         }
         if (!s.isConnected()) {
             s.socket.connect()
