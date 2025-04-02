@@ -15,8 +15,10 @@ import java.net.URISyntaxException
 
 
 class SocketIOConnection()  {
+
     lateinit var socket: Socket
-     var baseurl=""
+    var baseurl=""
+
     fun init(url:String="") {
         baseurl=url
         try {
@@ -29,16 +31,22 @@ class SocketIOConnection()  {
 
             })
 
-
-
-
-
-
         } catch (e: URISyntaxException) {
             socket.disconnect()
             Log.e(javaClass.name, e.message.orEmpty())
             Thread.sleep(2000)
             init();
+        }
+    }
+
+    fun isConnected(): Boolean {
+        return socket?.connected() == true
+    }
+
+    fun disconnect() {
+        if (socket?.connected() == true) {
+            socket?.disconnect()
+            Log.d(javaClass.name, "Socket disconnected successfully")
         }
     }
 }

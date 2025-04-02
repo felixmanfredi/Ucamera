@@ -46,6 +46,7 @@ class Window(private val context: Context) {
 
     lateinit var settings:settings
     lateinit var api:Webserver
+    lateinit var s: SocketIOConnection
 
     private val windowManager = context.getSystemService(Context.WINDOW_SERVICE) as WindowManager
     private val layoutInflater = context.getSystemService(Context.LAYOUT_INFLATER_SERVICE) as LayoutInflater
@@ -668,58 +669,62 @@ class Window(private val context: Context) {
     }
 
     fun updateConnection(){
-        var s:SocketIOConnection=SocketIOConnection()
-        s.init(webserver_url)
-        onCameraState(false)
 
         api= Webserver();
         api.init(webserver_url)
         settings= api.getSettings()
         updateValues()
 
-        s.socket.on(Socket.EVENT_CONNECT,Emitter.Listener {
-            onCameraState(true)
-        })
-
-        s.socket.on(Socket.EVENT_DISCONNECT,Emitter.Listener {
+        if (!::s.isInitialized) {
+            s=SocketIOConnection()
+            s.init(webserver_url)
             onCameraState(false)
-            Thread.sleep(2000)
-            s.init(webserver_url);
-        })
+
+            s.socket.on(Socket.EVENT_CONNECT,Emitter.Listener {
+                onCameraState(true)
+            })
+
+            s.socket.on(Socket.EVENT_DISCONNECT,Emitter.Listener {
+                onCameraState(false)
+                Thread.sleep(2000)
+                s.init(webserver_url);
+            })
 
 
-        s.socket.on("device_status", Emitter.Listener { it->
-            it.forEach {
-                    row->
-                var device=row as JSONObject
-                if(device.get("name")=="arducam"){
-                    if(!(device.get("is_recording") as Boolean)){
+            s.socket.on("device_status", Emitter.Listener { it->
+                it.forEach {
+                        row->
+                    var device=row as JSONObject
+                    if(device.get("name")=="arducam"){
+                        if(!(device.get("is_recording") as Boolean)){
+                            setAcquisitionState(false)
+                        }
+                    }
+                }
+
+            })
+
+            s.socket.on("datasets_storage_status", Emitter.Listener { it->
+                it.forEach {
+                        row->
+                    var dataset=row as JSONObject
+                    var acquisition = dataset.getJSONObject("current_camera_acquisition")
+                    if (acquisition.length() != 0) {
+                        setAcquisitionState(true)
+                        Handler(Looper.getMainLooper()).post {
+                            status.text = "Dataset " + acquisition.get("dataset_id").toString() +
+                                    " Foto " + acquisition.get("items").toString()
+                        }
+                    } else {
                         setAcquisitionState(false)
                     }
                 }
-            }
 
-        })
-
-        s.socket.on("datasets_storage_status", Emitter.Listener { it->
-            it.forEach {
-                    row->
-                var dataset=row as JSONObject
-                var acquisition = dataset.getJSONObject("current_camera_acquisition")
-                if (acquisition.length() != 0) {
-                    setAcquisitionState(true)
-                    Handler(Looper.getMainLooper()).post {
-                        status.text = "Dataset " + acquisition.get("dataset_id").toString() +
-                                " Foto " + acquisition.get("items").toString()
-                    }
-                } else {
-                    setAcquisitionState(false)
-                }
-            }
-
-        });
-
-        s.socket.connect()
+            });
+        }
+        if (!s.isConnected()) {
+            s.socket.connect()
+        }
         startPreview()
 
     }
