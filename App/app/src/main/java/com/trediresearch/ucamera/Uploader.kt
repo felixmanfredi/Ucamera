@@ -13,19 +13,18 @@ import java.util.Properties
 
 
 class Uploader {
-    val REMOTE_HOST = "192.168.0.109"
     val USERNAME = "admin"
     val PASSWORD = "ucamera"
     val REMOTE_PORT = 22
 
-    fun copyFileToSftp(srcFile: File, ftpPath: String): Boolean {
+    fun copyFileToSftp(srcFile: File, ftpPath: String,remote_host:String): Boolean {
 
         var jschSession: Session? = null
 
         try {
             val jsch = JSch()
             //jsch.setKnownHosts("/home/mkyong/.ssh/known_hosts")
-            jschSession = jsch.getSession(USERNAME, REMOTE_HOST, REMOTE_PORT)
+            jschSession = jsch.getSession(USERNAME, remote_host, REMOTE_PORT)
             jschSession.setPassword(PASSWORD)
 
             val config = Properties()
@@ -54,13 +53,13 @@ class Uploader {
     }
 
 
-    fun runCmdToSSH(command:String):Boolean{
+    fun runCmdToSSH(command:String,remote_host:String):Boolean{
         var jschSession: Session? = null
 
         try {
             val jsch = JSch()
             //jsch.setKnownHosts("/home/mkyong/.ssh/known_hosts")
-            jschSession = jsch.getSession(USERNAME, REMOTE_HOST, REMOTE_PORT)
+            jschSession = jsch.getSession(USERNAME, remote_host, REMOTE_PORT)
             jschSession.setPassword(PASSWORD)
 
             val config = Properties()
@@ -87,16 +86,16 @@ class Uploader {
         return true
     }
 
-    fun uploadFirmware(): Boolean {
+    fun uploadFirmware(remote_host: String): Boolean {
 
-        val inputFile: InputStream = App.activity.getResources().openRawResource(R.raw.server)
+        val inputFile: InputStream = App.activity.getResources().openRawResource(R.raw.server_1_1_0)
 
         val file = createTempFile()
         inputFile.copyTo(file.outputStream())
 
-        var result=copyFileToSftp(file,"/home/admin/firmware.zip")
+        var result=copyFileToSftp(file,"/home/admin/firmware.zip",remote_host)
         if(result)
-            result=runCmdToSSH("sudo unzip firmware.zip -d /usr/local/bin/server;sudo reboot")
+            result=runCmdToSSH("sudo unzip firmware.zip -d /usr/local/bin/server;sudo reboot",remote_host)
 
         return result
 

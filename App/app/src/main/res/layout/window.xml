@@ -40,7 +40,7 @@
                     android:layout_height="wrap_content"
                     android:layout_marginLeft="22dp"
                     android:textColor="@color/white"
-                    android:text="3D Research UCamera 1.1">
+                    android:text="3DR UCamera 1.1">
 
                 </TextView>
 
@@ -48,8 +48,9 @@
                     android:id="@+id/depth"
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
-                    android:layout_marginLeft="200dp"
                     android:textColor="@color/white"
+                    android:layout_gravity="end"
+                    android:layout_marginEnd="25dp"
                     android:text="0.0 metri">
 
                 </TextView>
@@ -278,6 +279,7 @@
                         android:id="@+id/btn_upload_firmware"
                         android:layout_width="match_parent"
                         android:layout_height="40dp"
+                        android:visibility="gone"
                         android:text="Update Firmware"></Button>
 
                     <Button

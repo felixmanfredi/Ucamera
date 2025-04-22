@@ -1,6 +1,7 @@
 package com.trediresearch.ucamera
 
 import android.annotation.SuppressLint
+import android.app.AlertDialog
 import android.content.Context
 import android.content.Intent
 import android.graphics.PixelFormat
@@ -9,6 +10,7 @@ import android.os.Handler
 import android.os.Looper
 import android.os.StrictMode
 import android.os.StrictMode.ThreadPolicy
+import android.text.InputType
 import android.util.DisplayMetrics
 import android.util.Log
 import android.view.Gravity
@@ -19,12 +21,14 @@ import android.view.View.OnTouchListener
 import android.view.WindowManager
 import android.webkit.WebView
 import android.widget.Button
+import android.widget.EditText
 import android.widget.FrameLayout
 import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.TextView
 import android.widget.Toast
 import androidx.annotation.RequiresApi
+import androidx.compose.material.AlertDialog
 import io.socket.client.Socket
 import io.socket.emitter.Emitter
 import org.json.JSONObject
@@ -33,16 +37,15 @@ import java.time.LocalDate
 
 @RequiresApi(Build.VERSION_CODES.O)
 class Window(private val context: Context) {
-//    var webserver_url="http://192.168.1.145:45032"
 
-    var webserver_url="http://192.168.0.109:45032"
+    var remote_host="192.168.1.145"
+    var remote_port=45032
     var onAcquisition=false;
     val windowHeight=150
-    val windowHeightMax=900
+    val windowHeightMax=300
     val windowWidth=270
     var interval=5.0
     var camera_connected=false;
-    var OnCameraConnected=false;
 
     lateinit var settings:settings
     lateinit var api:Webserver
@@ -436,8 +439,7 @@ class Window(private val context: Context) {
         }
 
         btn_upload_firmware.setOnClickListener{
-            val u:Uploader=Uploader()
-            u.uploadFirmware()
+         uploadFirmware()
         }
 
         btn_open_config.setOnClickListener{
@@ -453,7 +455,7 @@ class Window(private val context: Context) {
         }
 
         rootView.findViewById<Button>(R.id.btn_refresh_preview).setOnClickListener{
-            updateConnection()
+            updateConnection(true)
         }
 
         rootView.findViewById<Button>(R.id.btn_reset_settings).setOnClickListener{
@@ -496,8 +498,28 @@ class Window(private val context: Context) {
         }
     }
 
+    fun getAppConfig(){
+        val sharedPref = context?.getSharedPreferences("ucamera", Context.MODE_PRIVATE)
+        if(sharedPref!=null) {
+            remote_host=sharedPref.getString("remote_host", "192.168.1.145").toString()
+            //webserver_url = sharedPref.getString("webserver_url", "http://192.168.1.145:45032").toString()
+        }
+    }
+
+    fun saveAppConfig(){
+        val sharedPref = context?.getSharedPreferences("ucamera", Context.MODE_PRIVATE)
+        if(sharedPref!=null) {
+            with(sharedPref.edit()) {
+                putString("remote_host",remote_host)
+                //putString("webserver_url", webserver_url)
+                apply()
+            }
+        }
+    }
+
+
     fun resetSettings(){
-        settings.gain=1;
+        settings.gain=1.0;
         settings.contrast= 1.0;
         settings.brightness= 0.0
         settings.sharpness=1.0
@@ -546,6 +568,7 @@ class Window(private val context: Context) {
     }
 
     init {
+        getAppConfig()
         initWindowParams()
         initWindow()
     }
@@ -670,16 +693,70 @@ class Window(private val context: Context) {
         }
     }
 
-    fun updateConnection(){
+    fun updateConnection(answerAddress: Boolean=false){
 
         api= Webserver();
-        api.init(webserver_url)
+        api.init("http://"+remote_host+":"+remote_port)
+
+        var ucamera_version=""
+        try{
+            ucamera_version=api.getVersion().version
+        }catch(e:java.net.ConnectException){
+            Log.e("UCamera",e.message.toString())
+            if(answerAddress) {
+                Handler().post (Runnable{
+                    // Set up the input
+                    val input: EditText = EditText(App.activity);
+    // Specify the type of input expected; this, for example, sets the input as a password, and will mask the text
+                    input.setInputType(InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_URI)
+
+                    //richiedi di inserire un nuovo indirizzo IP
+                    val builder = AlertDialog.Builder(App.activity)
+                    builder.setTitle("UCamera non trovata")
+                    builder.setMessage("Dispositivo non trovato. Indicare un nuovo indirizzo IP su cui cercare la camera")
+                    builder.setView(input)
+                    builder.setPositiveButton(android.R.string.yes) { dialog, which ->
+                        remote_host=input.text.toString()
+                        //webserver_url = "http://" + input.text.toString() + ":45032"
+                        saveAppConfig()
+                        updateConnection(true)
+                    }
+
+                    builder.setNegativeButton(android.R.string.no) { dialog, which ->
+                        Toast.makeText(
+                            context,
+                            android.R.string.no, Toast.LENGTH_SHORT
+                        ).show()
+                    }
+
+
+                    builder.show()
+                } )
+
+            }
+
+            onCameraState(false)
+            return;
+
+        }
+
+        //verifica se bisogna aggiornare il server
+        if(ucamera_version!="1.1.0"){
+            //effettua l'aggiornamento
+            uploadFirmware()
+            return;
+
+
+        }
+
+
         settings= api.getSettings()
+
         updateValues()
 
         if (!::s.isInitialized) {
             s=SocketIOConnection()
-            s.init(webserver_url)
+            s.init("http://"+remote_host+":"+remote_port+"/")
             onCameraState(false)
 
             s.socket.on(Socket.EVENT_CONNECT,Emitter.Listener {
@@ -689,7 +766,7 @@ class Window(private val context: Context) {
             s.socket.on(Socket.EVENT_DISCONNECT,Emitter.Listener {
                 onCameraState(false)
                 Thread.sleep(2000)
-                s.init(webserver_url);
+                s.init("http://"+remote_host+":"+remote_port+"/");
             })
 
 
@@ -732,7 +809,7 @@ class Window(private val context: Context) {
                     if (altitude.getString(1) == "BSL") {
                         val altitudeValue = altitude.getDouble(0)
                         Handler(Looper.getMainLooper()).post {
-                            depth.text = "%.2f metri".format(altitudeValue)
+                            depth.text = "%.2f mt".format(altitudeValue)
                         }
                     }
 
@@ -749,7 +826,7 @@ class Window(private val context: Context) {
     }
 
     fun startPreview(){
-            preview.loadUrl(webserver_url+"/preview")
+            preview.loadUrl("http://"+remote_host+":"+remote_port+"/preview")
             preview.reload()
 
     }
@@ -775,17 +852,16 @@ class Window(private val context: Context) {
 
     }
 
-
     fun uploadFirmware(){
-
-        val intent = Intent()
-            .setType("*/*")
-            .setAction(Intent.ACTION_GET_CONTENT)
-
-        App.activity.startActivityForResult(Intent.createChooser(intent, "Select a file"), 111)
-
-
+        val u:Uploader=Uploader()
+        if(u.uploadFirmware(remote_host)){
+            Toast.makeText(App.activity,"Firmware aggiornato correttamente", Toast.LENGTH_SHORT);
+        }else{
+            Toast.makeText(App.activity,"Errore durante l'aggiornamento firmware. Riprovare",
+                Toast.LENGTH_SHORT);
+        }
 
     }
+
 
 }

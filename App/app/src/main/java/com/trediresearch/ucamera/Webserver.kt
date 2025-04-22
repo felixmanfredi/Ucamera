@@ -34,6 +34,7 @@ class Webserver {
                 .build()
 
             apiservice = retrofit.create(WebserverApi::class.java)
+
             return true
         }catch (e:Exception){
             Log.e("Ucamera",e.message.toString())
@@ -63,6 +64,29 @@ class Webserver {
         return false
     }
 
+    fun getVersion():version{
+        try{
+            var resp = apiservice.getVersion().execute()
+
+            var sessionResponse = resp.body()
+
+            if (sessionResponse != null) {
+                if (sessionResponse.status == "success") {
+                    return sessionResponse.data[0]
+                }
+            }
+        }
+        catch (e:java.net.ConnectException){
+            throw  java.net.ConnectException()
+        }
+        catch (e:Exception){
+            throw  java.net.ConnectException()
+            Log.e("UCamera",e.message.toString())
+        }
+
+        return version()
+    }
+
     fun getSettings(): settings {
         try{
             var resp = apiservice.getSettings().execute()
@@ -74,8 +98,13 @@ class Webserver {
                     return sessionResponse.data[0]
                 }
             }
-        }catch (e:Exception){
+        }
+        catch (e:java.net.ConnectException){
+            throw  java.net.ConnectException()
+        }
+        catch (e:Exception){
             Log.e("UCamera",e.message.toString())
+            throw  java.net.ConnectException()
         }
 
         return settings()

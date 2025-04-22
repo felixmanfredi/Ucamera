@@ -13,6 +13,11 @@ enum class ConverterFormat {
 }
 
 interface WebserverApi {
+    @Headers("Content-Type: application/json")
+    @GET("version")
+    @RequestFormat(ConverterFormat.JSON)
+    @ResponseFormat("application/json")
+    fun getVersion():Call<response<version>>
 
     @Headers("Content-Type: application/json")
     @PUT("camera/settings")

@@ -3,6 +3,11 @@ package com.trediresearch.ucamera
 import com.google.gson.annotations.SerializedName
 import java.util.ArrayList
 
+data class  version(
+    @SerializedName("version") var version: String=""
+    
+)
+
 data class  settings(
     @SerializedName("lensposition") var lensposition:Double=0.0,
     @SerializedName("brightness") var brightness:Double=0.0,
@@ -11,7 +16,7 @@ data class  settings(
     @SerializedName("exposurevalue") var exposurevalue:Int=0,
     @SerializedName("exposuretime") var exposureTime:Int=0,
     @SerializedName("contrast") var contrast:Double=0.0,
-    @SerializedName("gain") var gain:Int=1,
+    @SerializedName("gain") var gain:Double=1.0,
 
     )
 

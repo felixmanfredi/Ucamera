@@ -33,14 +33,8 @@ import androidx.annotation.RequiresApi
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
-import androidx.core.net.toFile
 import androidx.navigation.ui.AppBarConfiguration
-import com.android.volley.Request
-import com.android.volley.Response
-import com.android.volley.toolbox.StringRequest
-import com.android.volley.toolbox.Volley
-import java.io.File
-import java.util.*
+
 
 
 class MainActivity : AppCompatActivity() {
@@ -209,7 +203,7 @@ class MainActivity : AppCompatActivity() {
                     }
                 }
 
-                uploader.copyFileToSftp(file,"/home/admin/test.pdf")
+                //uploader.copyFileToSftp(file,"/home/admin/test.pdf")
                 //uploader.runCmdToSSH()
                 file.delete()
 
