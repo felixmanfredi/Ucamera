@@ -8,6 +8,7 @@ import android.os.Looper
 import android.util.Log
 import android.widget.Toast
 import androidx.annotation.RequiresApi
+import okhttp3.OkHttpClient
 import okhttp3.RequestBody
 import okhttp3.ResponseBody
 import retrofit2.Converter
@@ -16,6 +17,7 @@ import retrofit2.converter.gson.GsonConverterFactory
 import retrofit2.converter.scalars.ScalarsConverterFactory
 import java.lang.reflect.Type
 import java.net.InetAddress
+import java.util.concurrent.TimeUnit
 
 
 class Webserver {
@@ -24,13 +26,18 @@ class Webserver {
     lateinit var apiservice: WebserverApi
 
     fun init(url:String):Boolean {
-
+        var client=okhttp3.OkHttpClient.Builder()
+            .readTimeout(2, TimeUnit.SECONDS)
+            .writeTimeout(2, TimeUnit.SECONDS)
+            .connectTimeout(2, TimeUnit.SECONDS)
+            .build()
         try {
 
             retrofit = Retrofit.Builder()
                 .baseUrl(url)
                 //.addConverterFactory(GsonConverterFactory.create())
                 .addConverterFactory(MultipleConverterFactory())
+                .client(client)
                 .build()
 
             apiservice = retrofit.create(WebserverApi::class.java)
