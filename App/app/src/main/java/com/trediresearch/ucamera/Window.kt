@@ -652,6 +652,8 @@ class Window(private val context: Context) {
            if(api.stopDataset()) {
                setAcquisitionState(false)
            }else{
+               setAcquisitionState(false)
+
                Toast.makeText(App.activity,"Errore durante l'arresto dell'acquisizione", Toast.LENGTH_LONG).show()
            }
        }else{
