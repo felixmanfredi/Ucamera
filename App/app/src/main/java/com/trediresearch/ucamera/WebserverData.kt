@@ -31,9 +31,13 @@ data class dataset(
     @SerializedName("dataset_id") var dataset_id:Int=0,
     @SerializedName("datasetname") var datasetname:String="",
     @SerializedName("description") var description:String="",
+    @SerializedName("acquisition_device") var acquisition_device: String="camera",
     @SerializedName("interval") var interval: Double?=5.0,
 
 
 
     )
+
+data class CaptureRequest(
+    @SerializedName("flash") val flash: Boolean = false)
 
