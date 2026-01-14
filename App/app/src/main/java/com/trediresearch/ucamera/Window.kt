@@ -32,7 +32,9 @@ import androidx.compose.material.AlertDialog
 import io.socket.client.Socket
 import io.socket.emitter.Emitter
 import org.json.JSONObject
-import java.time.LocalDate
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
 
 @RequiresApi(Build.VERSION_CODES.O)
@@ -40,6 +42,7 @@ class Window(private val context: Context) {
 
     var remote_host="192.168.1.145"
     var remote_port=45032
+    var stream_port=8877
     var onAcquisition=false;
     val windowHeight=150
     val windowHeightMax=300
@@ -658,7 +661,8 @@ class Window(private val context: Context) {
            }
        }else{
            val d:dataset=dataset()
-           d.datasetname= LocalDate.now().toString()
+           val sdf = SimpleDateFormat("yyyy-MM-dd", Locale.ITALY)
+           d.datasetname = sdf.format(Date())
 
            if(!video){
                d.interval = if (interval > 0.0) interval else null; //Set interval
@@ -743,7 +747,7 @@ class Window(private val context: Context) {
         }
 
         //verifica se bisogna aggiornare il server
-        if(ucamera_version!="1.1.0"){
+        if(ucamera_version!="1.1.9"){
             //effettua l'aggiornamento
             uploadFirmware()
             return;
@@ -777,9 +781,8 @@ class Window(private val context: Context) {
                         row->
                     var device=row as JSONObject
                     if(device.get("name")=="arducam"){
-                        if(!(device.get("is_recording") as Boolean)){
-                            setAcquisitionState(false)
-                        }
+                        var isRecording = device.getBoolean("is_recording")
+                        setAcquisitionState(isRecording)
                     }
                 }
 
@@ -791,13 +794,13 @@ class Window(private val context: Context) {
                     var dataset=row as JSONObject
                     var acquisition = dataset.getJSONObject("current_camera_acquisition")
                     if (acquisition.length() != 0) {
-                        setAcquisitionState(true)
+                        //setAcquisitionState(true)
                         Handler(Looper.getMainLooper()).post {
                             status.text = "Dataset " + acquisition.get("dataset_id").toString() +
                                     " Foto " + acquisition.get("items").toString()
                         }
                     } else {
-                        setAcquisitionState(false)
+                        //setAcquisitionState(false)
                     }
                 }
 
@@ -807,8 +810,8 @@ class Window(private val context: Context) {
                 it.forEach {
                     row->
                     var location = row as JSONObject
-                    var altitude = location.getJSONArray("altitude")
-                    if (altitude.getString(1) == "BSL") {
+                    var altitude = location.optJSONArray("altitude")
+                    if (altitude != null && altitude.length() >= 2 && altitude.getString(1) == "BSL") {
                         val altitudeValue = altitude.getDouble(0)
                         Handler(Looper.getMainLooper()).post {
                             depth.text = "%.2f mt".format(altitudeValue)
@@ -828,7 +831,7 @@ class Window(private val context: Context) {
     }
 
     fun startPreview(){
-            preview.loadUrl("http://"+remote_host+":"+remote_port+"/preview")
+            preview.loadUrl("rtsp://"+remote_host+":"+stream_port+"/camera-preview")
             preview.reload()
 
     }
