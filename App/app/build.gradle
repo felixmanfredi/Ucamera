@@ -4,7 +4,7 @@ plugins {
 }
 
 android {
-    compileSdk 34
+    compileSdk 35
     buildToolsVersion '34.0.0'
 
     defaultConfig {
@@ -72,6 +72,10 @@ dependencies {
     implementation "androidx.room:room-runtime:2.2.5"
     implementation 'androidx.room:room-ktx:2.2.5'
     implementation "com.jcraft:jsch:0.1.55"
+
+    implementation "androidx.media3:media3-exoplayer:1.9.0"
+    implementation "androidx.media3:media3-ui:1.9.0"
+    implementation "androidx.media3:media3-exoplayer-rtsp:1.9.0"
 
     //kapt "androidx.room:room-compiler:2.2.5"
 

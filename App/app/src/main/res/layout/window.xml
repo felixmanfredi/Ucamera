@@ -85,71 +85,79 @@
                         android:layout_width="wrap_content"
                         android:layout_height="match_parent"
                         >
-                        <WebView
-                            android:id="@+id/preview"
-                            android:layout_width="150dp"
-                            android:layout_height="match_parent">
+                    <!--
+                    <WebView
+                        android:id="@+id/preview"
+                        android:layout_width="150dp"
+                        android:layout_height="match_parent">
 
-                        </WebView>
-                        <ImageView
-                            android:id="@+id/recording"
-                            android:layout_height="20dp"
-                            android:layout_width="20dp"
-                            android:layout_marginTop="10dp"
-                            android:layout_marginLeft="10dp"
-                            android:src="@drawable/rectangle"
-                            android:visibility="gone"
+                    </WebView>
+                    -->
 
-                            >
-                        </ImageView>
+                    <androidx.media3.ui.PlayerView
+                        android:id="@+id/preview"
+                        android:layout_width="150dp"
+                        android:layout_height="match_parent" />
 
-                        <TextView
-                            android:id="@+id/status"
-                            android:textSize="7pt"
-                            android:layout_width="wrap_content"
-                            android:layout_height="wrap_content"
-                            android:width="140dp"
-                            android:layout_marginTop="10dp"
-                            android:textAlignment="textEnd"
-                            android:textColor="@color/white"
-                            android:textFontWeight="@integer/material_motion_duration_long_1"
-                            android:text="Status"></TextView>
-                    </FrameLayout>
+                    <ImageView
+                        android:id="@+id/recording"
+                        android:layout_height="20dp"
+                        android:layout_width="20dp"
+                        android:layout_marginTop="10dp"
+                        android:layout_marginLeft="10dp"
+                        android:src="@drawable/rectangle"
+                        android:visibility="gone"
 
-
-                    <LinearLayout
-                        android:layout_width="match_parent"
-                        android:layout_height="wrap_content"
-                        android:orientation="vertical"
                         >
+                    </ImageView>
+
+                    <TextView
+                        android:id="@+id/status"
+                        android:textSize="7pt"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:width="140dp"
+                        android:layout_marginTop="10dp"
+                        android:textAlignment="textEnd"
+                        android:textColor="@color/white"
+                        android:textFontWeight="@integer/material_motion_duration_long_1"
+                        android:text="Status"></TextView>
+                </FrameLayout>
+
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="vertical"
+                    >
 
 
 
-                        <Button
-                            android:id="@+id/btn_open_acquisition"
-                            android:layout_width="match_parent"
-                            android:layout_height="40dp"
+                    <Button
+                        android:id="@+id/btn_open_acquisition"
+                        android:layout_width="match_parent"
+                        android:layout_height="40dp"
 
-                            android:text="Acquisizione"></Button>
-                        <Button
-                            android:id="@+id/btn_open_config"
-                            android:layout_width="match_parent"
-                            android:layout_height="40dp"
-                            android:text="Parametri"></Button>
-                        <Button
-                            android:id="@+id/btn_open_other"
-                            android:layout_width="match_parent"
-                            android:layout_height="40dp"
-                            android:text="Altro"></Button>
+                        android:text="Acquisizione"></Button>
+                    <Button
+                        android:id="@+id/btn_open_config"
+                        android:layout_width="match_parent"
+                        android:layout_height="40dp"
+                        android:text="Parametri"></Button>
+                    <Button
+                        android:id="@+id/btn_open_other"
+                        android:layout_width="match_parent"
+                        android:layout_height="40dp"
+                        android:text="Altro"></Button>
 
-
-                    </LinearLayout>
 
                 </LinearLayout>
 
-            </FrameLayout>
+            </LinearLayout>
 
-            <!-- Acquisizioni -->
+        </FrameLayout>
+
+        <!-- Acquisizioni -->
             <FrameLayout
                 android:id="@+id/acquisition_panel"
                 android:background="@color/white"

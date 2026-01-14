@@ -35,6 +35,10 @@ import org.json.JSONObject
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import androidx.media3.common.MediaItem
+import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.rtsp.RtspMediaSource
+import androidx.media3.ui.PlayerView
 
 
 @RequiresApi(Build.VERSION_CODES.O)
@@ -78,7 +82,7 @@ class Window(private val context: Context) {
 
     lateinit var btn_preview_image:Button
     lateinit var btn_collapse:Button
-    lateinit var preview:WebView
+    lateinit var preview:PlayerView //:WebView
     lateinit var status:TextView
     lateinit var depth:TextView
     lateinit var recording:ImageView
@@ -215,7 +219,7 @@ class Window(private val context: Context) {
         btn_open_config=rootView.findViewById(R.id.btn_open_config) as Button
         btn_collapse=rootView.findViewById(R.id.btn_collapse) as Button
 
-        preview=rootView.findViewById(R.id.preview) as WebView
+        preview=rootView.findViewById(R.id.preview) as PlayerView //as WebView
         //rectimage=rootView.findViewById(R.id.rect) as ImageView
         status=rootView.findViewById(R.id.status) as TextView
         depth=rootView.findViewById(R.id.depth) as TextView
@@ -589,6 +593,7 @@ class Window(private val context: Context) {
 
     fun close() {
         try {
+            stopPreview()
             windowManager.removeView(rootView)
         } catch (e: Exception) {
             // Ignore exception for now, but in production, you should have some
@@ -831,10 +836,28 @@ class Window(private val context: Context) {
     }
 
     fun startPreview(){
-            preview.loadUrl("rtsp://"+remote_host+":"+stream_port+"/camera-preview")
-            preview.reload()
+        var rtspUrl = "rtsp://"+remote_host+":"+stream_port+"/camera-preview"
 
+        var player = ExoPlayer.Builder(context).build().also { exoPlayer ->
+            preview.player = exoPlayer
+
+            val mediaItem = MediaItem.fromUri(rtspUrl)
+
+            val mediaSource = RtspMediaSource.Factory()
+                .setForceUseRtpTcp(true)
+                .createMediaSource(mediaItem)
+
+            exoPlayer.setMediaSource(mediaSource)
+            exoPlayer.prepare()
+            exoPlayer.play()
+        }
     }
+
+    fun stopPreview(){
+        preview.player?.release()
+        preview.player = null
+    }
+
     @SuppressLint("ResourceAsColor")
     fun onCameraState(connected:Boolean){
         camera_connected=connected;
