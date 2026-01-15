@@ -35,10 +35,11 @@ import org.json.JSONObject
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
-import androidx.media3.common.MediaItem
-import androidx.media3.exoplayer.ExoPlayer
-import androidx.media3.exoplayer.rtsp.RtspMediaSource
-import androidx.media3.ui.PlayerView
+
+import org.videolan.libvlc.LibVLC
+import org.videolan.libvlc.Media
+import org.videolan.libvlc.MediaPlayer
+import org.videolan.libvlc.util.VLCVideoLayout
 
 
 @RequiresApi(Build.VERSION_CODES.O)
@@ -82,7 +83,7 @@ class Window(private val context: Context) {
 
     lateinit var btn_preview_image:Button
     lateinit var btn_collapse:Button
-    lateinit var preview:PlayerView //:WebView
+    lateinit var preview: VLCVideoLayout //:WebView
     lateinit var status:TextView
     lateinit var depth:TextView
     lateinit var recording:ImageView
@@ -92,6 +93,9 @@ class Window(private val context: Context) {
     lateinit var btn_upload_firmware:Button
     val EXPOSURE_TIME_LABEL= arrayListOf<String>("1/2","1/4","1/8","1/15","1/30","1/60","1/125","1/250","1/500","1/1000","1/2000")
     val EXPOSURE_TIME= arrayListOf<Int>(453000,250000,125000,66666,33333,16666,8000,4000,2000,1000,500)
+
+    private var libVlc: LibVLC? = null
+    private var vlcPlayer: MediaPlayer? = null
 
 
     private val windowParams = WindowManager.LayoutParams(
@@ -219,7 +223,7 @@ class Window(private val context: Context) {
         btn_open_config=rootView.findViewById(R.id.btn_open_config) as Button
         btn_collapse=rootView.findViewById(R.id.btn_collapse) as Button
 
-        preview=rootView.findViewById(R.id.preview) as PlayerView //as WebView
+        preview=rootView.findViewById(R.id.preview) as VLCVideoLayout //as WebView
         //rectimage=rootView.findViewById(R.id.rect) as ImageView
         status=rootView.findViewById(R.id.status) as TextView
         depth=rootView.findViewById(R.id.depth) as TextView
@@ -837,25 +841,28 @@ class Window(private val context: Context) {
 
     fun startPreview(){
         var rtspUrl = "rtsp://"+remote_host+":"+stream_port+"/camera-preview"
-
-        var player = ExoPlayer.Builder(context).build().also { exoPlayer ->
-            preview.player = exoPlayer
-
-            val mediaItem = MediaItem.fromUri(rtspUrl)
-
-            val mediaSource = RtspMediaSource.Factory()
-                .setForceUseRtpTcp(true)
-                .createMediaSource(mediaItem)
-
-            exoPlayer.setMediaSource(mediaSource)
-            exoPlayer.prepare()
-            exoPlayer.play()
+        libVlc = LibVLC(preview.context, arrayListOf(
+            "--rtsp-tcp",          // forza TCP (equivalente a quello che fai con Exo)
+            "--network-caching=150" // puoi provare 150-500
+        ))
+        vlcPlayer = MediaPlayer(libVlc).apply {
+            attachViews(preview, null, false, false)
+            val media = Media(libVlc, rtspUrl)
+            media.addOption(":rtsp-tcp")
+            this.media = media
+            media.release()
+            play()
         }
+
     }
 
     fun stopPreview(){
-        preview.player?.release()
-        preview.player = null
+        vlcPlayer?.stop()
+        vlcPlayer?.detachViews()
+        vlcPlayer?.release()
+        vlcPlayer = null
+        libVlc?.release()
+        libVlc = null
     }
 
     @SuppressLint("ResourceAsColor")
@@ -867,13 +874,13 @@ class Window(private val context: Context) {
                 status.text = "Ready"
                 btn_open_config.isEnabled = true
                 btn_open_acquisition.isEnabled = true
-                preview.visibility = PlayerView.VISIBLE
+                preview.visibility = WebView.VISIBLE
             } else {
                 main_panel.setBackgroundColor(R.color.purple_200)
                 status.text = "No connected"
                 btn_open_config.isEnabled = false
                 btn_open_acquisition.isEnabled = false
-                preview.visibility = PlayerView.INVISIBLE
+                preview.visibility = WebView.INVISIBLE
 
             }
         }

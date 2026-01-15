@@ -94,7 +94,7 @@
                     </WebView>
                     -->
 
-                    <androidx.media3.ui.PlayerView
+                    <org.videolan.libvlc.util.VLCVideoLayout
                         android:id="@+id/preview"
                         android:layout_width="150dp"
                         android:layout_height="match_parent" />

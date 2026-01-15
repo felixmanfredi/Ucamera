@@ -56,8 +56,6 @@ dependencies {
     implementation ("io.ktor:ktor-client-websockets:1.6.4")
     implementation ("io.socket:socket.io-client:2.0.1")
 
-    implementation("androidx.media3:media3-exoplayer:1.9.0")
-    implementation("androidx.media3:media3-ui:1.9.0")
-    implementation("androidx.media3:media3-exoplayer-rtsp:1.9.0")
+    implementation("org.videolan.android:libvlc-all:3.6.0")
 
 }
