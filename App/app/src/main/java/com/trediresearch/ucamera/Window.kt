@@ -867,13 +867,13 @@ class Window(private val context: Context) {
                 status.text = "Ready"
                 btn_open_config.isEnabled = true
                 btn_open_acquisition.isEnabled = true
-                preview.visibility = WebView.VISIBLE
+                preview.visibility = PlayerView.VISIBLE
             } else {
                 main_panel.setBackgroundColor(R.color.purple_200)
                 status.text = "No connected"
                 btn_open_config.isEnabled = false
                 btn_open_acquisition.isEnabled = false
-                preview.visibility = WebView.INVISIBLE
+                preview.visibility = PlayerView.INVISIBLE
 
             }
         }
