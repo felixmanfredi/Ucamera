@@ -41,6 +41,8 @@ import org.videolan.libvlc.LibVLC
 import org.videolan.libvlc.Media
 import org.videolan.libvlc.MediaPlayer
 import org.videolan.libvlc.util.VLCVideoLayout
+import java.text.DecimalFormat
+import java.text.DecimalFormatSymbols
 
 
 @RequiresApi(Build.VERSION_CODES.O)
@@ -98,6 +100,9 @@ class Window(private val context: Context) {
     private var libVlc: LibVLC? = null
     private var vlcPlayer: MediaPlayer? = null
 
+    private val paramValueFormat = DecimalFormat("0.##").apply {
+        decimalFormatSymbols = DecimalFormatSymbols.getInstance(Locale.getDefault())
+    }
 
     private val windowParams = WindowManager.LayoutParams(
         0,
@@ -249,12 +254,10 @@ class Window(private val context: Context) {
         StrictMode.setThreadPolicy(policy)
 
 
-
         brightness_control.findViewById<Button>(R.id.btn_plus).setOnClickListener {
             if(settings.brightness < 1) {
                 settings.brightness = settings.brightness+0.1;
-                api.setSettings(settings)
-                updateValues()
+                setSettings()
             }
         }
 
@@ -554,11 +557,11 @@ class Window(private val context: Context) {
     }
 
     fun updateValues(){
-        brightness_control.findViewById<TextView>(R.id.value).text=settings.brightness.toString()
-        contrast_control.findViewById<TextView>(R.id.value).text=settings.contrast.toString()
-        sharpness_control.findViewById<TextView>(R.id.value).text=settings.sharpness.toString()
-        saturation_control.findViewById<TextView>(R.id.value).text=settings.saturation.toString()
-        exposure_control.findViewById<TextView>(R.id.value).text=settings.exposurevalue.toString()
+        brightness_control.findViewById<TextView>(R.id.value).text=paramValueFormat.format(settings.brightness)
+        contrast_control.findViewById<TextView>(R.id.value).text=paramValueFormat.format(settings.contrast)
+        sharpness_control.findViewById<TextView>(R.id.value).text=paramValueFormat.format(settings.sharpness)
+        saturation_control.findViewById<TextView>(R.id.value).text=paramValueFormat.format(settings.saturation)
+        exposure_control.findViewById<TextView>(R.id.value).text=paramValueFormat.format(settings.exposurevalue)
 
         var id=0
         for(v in EXPOSURE_TIME){
@@ -570,11 +573,11 @@ class Window(private val context: Context) {
         }
 
 
-        lensposition_control.findViewById<TextView>(R.id.value).text=settings.lensposition.toString()
-        interval_control.findViewById<TextView>(R.id.value).text=interval.toString()
+        lensposition_control.findViewById<TextView>(R.id.value).text=paramValueFormat.format(settings.lensposition)
+        interval_control.findViewById<TextView>(R.id.value).text=paramValueFormat.format(interval)
 
 
-        gain_control.findViewById<TextView>(R.id.value).text=(settings.gain*100).toString()
+        gain_control.findViewById<TextView>(R.id.value).text=paramValueFormat.format((settings.gain*100))
 
 
     }
