@@ -80,7 +80,6 @@
                     android:orientation="horizontal">
 
 
-
                     <FrameLayout
                         android:layout_width="wrap_content"
                         android:layout_height="match_parent"
@@ -94,35 +93,43 @@
                     </WebView>
                     -->
 
-                    <org.videolan.libvlc.util.VLCVideoLayout
-                        android:id="@+id/preview"
-                        android:layout_width="150dp"
-                        android:layout_height="match_parent" />
+                        <androidx.constraintlayout.widget.ConstraintLayout
+                            android:layout_width="150dp"
+                            android:layout_height="match_parent">
 
-                    <ImageView
-                        android:id="@+id/recording"
-                        android:layout_height="20dp"
-                        android:layout_width="20dp"
-                        android:layout_marginTop="10dp"
-                        android:layout_marginLeft="10dp"
-                        android:src="@drawable/rectangle"
-                        android:visibility="gone"
+                            <org.videolan.libvlc.util.VLCVideoLayout
+                                android:id="@+id/preview"
+                                android:layout_width="0dp"
+                                android:layout_height="0dp"
+                                app:layout_constraintBottom_toBottomOf="parent"
+                                app:layout_constraintEnd_toEndOf="parent"
+                                app:layout_constraintStart_toStartOf="parent"
+                                app:layout_constraintTop_toTopOf="parent" />
+                        </androidx.constraintlayout.widget.ConstraintLayout>
 
-                        >
-                    </ImageView>
+                        <ImageView
+                            android:id="@+id/recording"
+                            android:layout_width="20dp"
+                            android:layout_height="20dp"
+                            android:layout_marginLeft="10dp"
+                            android:layout_marginTop="10dp"
+                            android:src="@drawable/rectangle"
+                            android:visibility="gone"
 
-                    <TextView
-                        android:id="@+id/status"
-                        android:textSize="7pt"
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:width="140dp"
-                        android:layout_marginTop="10dp"
-                        android:textAlignment="textEnd"
-                        android:textColor="@color/white"
-                        android:textFontWeight="@integer/material_motion_duration_long_1"
-                        android:text="Status"></TextView>
-                </FrameLayout>
+                            ></ImageView>
+
+                        <TextView
+                            android:id="@+id/status"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:layout_marginTop="10dp"
+                            android:width="140dp"
+                            android:text="Status"
+                            android:textAlignment="textEnd"
+                            android:textColor="@color/white"
+                            android:textFontWeight="@integer/material_motion_duration_long_1"
+                            android:textSize="7pt"></TextView>
+                    </FrameLayout>
 
 
                 <LinearLayout

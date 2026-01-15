@@ -5,6 +5,7 @@ import android.app.AlertDialog
 import android.content.Context
 import android.content.Intent
 import android.graphics.PixelFormat
+import android.net.Uri
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
@@ -768,6 +769,8 @@ class Window(private val context: Context) {
         settings= api.getSettings()
 
         updateValues()
+        if (answerAddress)
+            stopPreview()
 
         if (!::s.isInitialized) {
             s=SocketIOConnection()
@@ -847,10 +850,13 @@ class Window(private val context: Context) {
         ))
         vlcPlayer = MediaPlayer(libVlc).apply {
             attachViews(preview, null, false, false)
-            val media = Media(libVlc, rtspUrl)
+
+            val media = Media(libVlc, Uri.parse(rtspUrl))
             media.addOption(":rtsp-tcp")
+            media.addOption(":network-caching=150")
             this.media = media
             media.release()
+
             play()
         }
 
@@ -874,13 +880,13 @@ class Window(private val context: Context) {
                 status.text = "Ready"
                 btn_open_config.isEnabled = true
                 btn_open_acquisition.isEnabled = true
-                preview.visibility = WebView.VISIBLE
+                preview.visibility = VLCVideoLayout.VISIBLE
             } else {
                 main_panel.setBackgroundColor(R.color.purple_200)
                 status.text = "No connected"
                 btn_open_config.isEnabled = false
                 btn_open_acquisition.isEnabled = false
-                preview.visibility = WebView.INVISIBLE
+                preview.visibility = VLCVideoLayout.INVISIBLE
 
             }
         }
