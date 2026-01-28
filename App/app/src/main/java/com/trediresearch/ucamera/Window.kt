@@ -93,7 +93,7 @@ class Window(private val context: Context) {
 
     lateinit var btn_open_acquisition:Button
     lateinit var btn_open_config:Button
-    lateinit var btn_upload_firmware:Button
+    //lateinit var btn_upload_firmware:Button
     val EXPOSURE_TIME_LABEL= arrayListOf<String>("1/2","1/4","1/8","1/15","1/30","1/60","1/125","1/250","1/500","1/1000","1/2000")
     val EXPOSURE_TIME= arrayListOf<Int>(453000,250000,125000,66666,33333,16666,8000,4000,2000,1000,500)
 
@@ -221,7 +221,7 @@ class Window(private val context: Context) {
         recording= rootView.findViewById(R.id.recording) as ImageView
         btn_start_acquisition=rootView.findViewById(R.id.btn_start_acquisition) as Button
         btn_start_video=rootView.findViewById(R.id.btn_start_video) as Button
-        btn_upload_firmware=rootView.findViewById(R.id.btn_upload_firmware) as Button
+        //btn_upload_firmware=rootView.findViewById(R.id.btn_upload_firmware) as Button
 
         btn_preview_image=rootView.findViewById(R.id.btn_preview_image) as Button
 
@@ -453,9 +453,10 @@ class Window(private val context: Context) {
 
         }
 
+        /*
         btn_upload_firmware.setOnClickListener{
-         uploadFirmware()
-        }
+         uploadFirmware() //TODO: Lasciamo anche questa possibilità?
+        }*/
 
         btn_open_config.setOnClickListener{
             openConfig()
@@ -759,14 +760,13 @@ class Window(private val context: Context) {
 
         }
 
+        /*
         //verifica se bisogna aggiornare il server
         if(ucamera_version!="1.1.9"){
             //effettua l'aggiornamento
             uploadFirmware()
             return;
-
-
-        }
+        }*/
 
 
         settings= api.getSettings()
@@ -897,14 +897,13 @@ class Window(private val context: Context) {
     }
 
     fun uploadFirmware(){
-        val u:Uploader=Uploader()
-        if(u.uploadFirmware(remote_host)){
-            Toast.makeText(App.activity,"Firmware aggiornato correttamente", Toast.LENGTH_SHORT);
-        }else{
-            Toast.makeText(App.activity,"Errore durante l'aggiornamento firmware. Riprovare",
-                Toast.LENGTH_SHORT);
-        }
-
+        //val u:Uploader=Uploader()
+        //if(u.uploadFirmware(remote_host)){
+        //    Toast.makeText(App.activity,"Firmware aggiornato correttamente", Toast.LENGTH_SHORT);
+        //}else{
+        //    Toast.makeText(App.activity,"Errore durante l'aggiornamento firmware. Riprovare",
+        //        Toast.LENGTH_SHORT);
+        //}
     }
 
 
