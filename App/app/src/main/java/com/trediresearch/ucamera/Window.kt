@@ -745,7 +745,7 @@ class Window(private val context: Context) {
         //verifica se bisogna aggiornare il server
         if(ucamera_version!="1.1.0"){
             //effettua l'aggiornamento
-            uploadFirmware()
+           // uploadFirmware()
             return;
 
 
