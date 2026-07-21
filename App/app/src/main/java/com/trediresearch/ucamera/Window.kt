@@ -5,6 +5,7 @@ import android.app.AlertDialog
 import android.content.Context
 import android.content.Intent
 import android.graphics.PixelFormat
+import android.net.Uri
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
@@ -32,7 +33,16 @@ import androidx.compose.material.AlertDialog
 import io.socket.client.Socket
 import io.socket.emitter.Emitter
 import org.json.JSONObject
-import java.time.LocalDate
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
+
+import org.videolan.libvlc.LibVLC
+import org.videolan.libvlc.Media
+import org.videolan.libvlc.MediaPlayer
+import org.videolan.libvlc.util.VLCVideoLayout
+import java.text.DecimalFormat
+import java.text.DecimalFormatSymbols
 
 
 @RequiresApi(Build.VERSION_CODES.O)
@@ -40,6 +50,7 @@ class Window(private val context: Context) {
 
     var remote_host="192.168.1.145"
     var remote_port=45032
+    var stream_port=8877
     var onAcquisition=false;
     val windowHeight=150
     val windowHeightMax=300
@@ -75,17 +86,23 @@ class Window(private val context: Context) {
 
     lateinit var btn_preview_image:Button
     lateinit var btn_collapse:Button
-    lateinit var preview:WebView
+    lateinit var preview: VLCVideoLayout //:WebView
     lateinit var status:TextView
     lateinit var depth:TextView
     lateinit var recording:ImageView
 
     lateinit var btn_open_acquisition:Button
     lateinit var btn_open_config:Button
-    lateinit var btn_upload_firmware:Button
+    //lateinit var btn_upload_firmware:Button
     val EXPOSURE_TIME_LABEL= arrayListOf<String>("1/2","1/4","1/8","1/15","1/30","1/60","1/125","1/250","1/500","1/1000","1/2000")
     val EXPOSURE_TIME= arrayListOf<Int>(453000,250000,125000,66666,33333,16666,8000,4000,2000,1000,500)
 
+    private var libVlc: LibVLC? = null
+    private var vlcPlayer: MediaPlayer? = null
+
+    private val paramValueFormat = DecimalFormat("0.##").apply {
+        decimalFormatSymbols = DecimalFormatSymbols.getInstance(Locale.getDefault())
+    }
 
     private val windowParams = WindowManager.LayoutParams(
         0,
@@ -204,7 +221,7 @@ class Window(private val context: Context) {
         recording= rootView.findViewById(R.id.recording) as ImageView
         btn_start_acquisition=rootView.findViewById(R.id.btn_start_acquisition) as Button
         btn_start_video=rootView.findViewById(R.id.btn_start_video) as Button
-        btn_upload_firmware=rootView.findViewById(R.id.btn_upload_firmware) as Button
+        //btn_upload_firmware=rootView.findViewById(R.id.btn_upload_firmware) as Button
 
         btn_preview_image=rootView.findViewById(R.id.btn_preview_image) as Button
 
@@ -212,7 +229,7 @@ class Window(private val context: Context) {
         btn_open_config=rootView.findViewById(R.id.btn_open_config) as Button
         btn_collapse=rootView.findViewById(R.id.btn_collapse) as Button
 
-        preview=rootView.findViewById(R.id.preview) as WebView
+        preview=rootView.findViewById(R.id.preview) as VLCVideoLayout //as WebView
         //rectimage=rootView.findViewById(R.id.rect) as ImageView
         status=rootView.findViewById(R.id.status) as TextView
         depth=rootView.findViewById(R.id.depth) as TextView
@@ -237,12 +254,10 @@ class Window(private val context: Context) {
         StrictMode.setThreadPolicy(policy)
 
 
-
         brightness_control.findViewById<Button>(R.id.btn_plus).setOnClickListener {
             if(settings.brightness < 1) {
                 settings.brightness = settings.brightness+0.1;
-                api.setSettings(settings)
-                updateValues()
+                setSettings()
             }
         }
 
@@ -438,9 +453,10 @@ class Window(private val context: Context) {
 
         }
 
+        /*
         btn_upload_firmware.setOnClickListener{
-         uploadFirmware()
-        }
+         uploadFirmware() //TODO: Lasciamo anche questa possibilità?
+        }*/
 
         btn_open_config.setOnClickListener{
             openConfig()
@@ -542,11 +558,11 @@ class Window(private val context: Context) {
     }
 
     fun updateValues(){
-        brightness_control.findViewById<TextView>(R.id.value).text=settings.brightness.toString()
-        contrast_control.findViewById<TextView>(R.id.value).text=settings.contrast.toString()
-        sharpness_control.findViewById<TextView>(R.id.value).text=settings.sharpness.toString()
-        saturation_control.findViewById<TextView>(R.id.value).text=settings.saturation.toString()
-        exposure_control.findViewById<TextView>(R.id.value).text=settings.exposurevalue.toString()
+        brightness_control.findViewById<TextView>(R.id.value).text=paramValueFormat.format(settings.brightness)
+        contrast_control.findViewById<TextView>(R.id.value).text=paramValueFormat.format(settings.contrast)
+        sharpness_control.findViewById<TextView>(R.id.value).text=paramValueFormat.format(settings.sharpness)
+        saturation_control.findViewById<TextView>(R.id.value).text=paramValueFormat.format(settings.saturation)
+        exposure_control.findViewById<TextView>(R.id.value).text=paramValueFormat.format(settings.exposurevalue)
 
         var id=0
         for(v in EXPOSURE_TIME){
@@ -558,11 +574,11 @@ class Window(private val context: Context) {
         }
 
 
-        lensposition_control.findViewById<TextView>(R.id.value).text=settings.lensposition.toString()
-        interval_control.findViewById<TextView>(R.id.value).text=interval.toString()
+        lensposition_control.findViewById<TextView>(R.id.value).text=paramValueFormat.format(settings.lensposition)
+        interval_control.findViewById<TextView>(R.id.value).text=paramValueFormat.format(interval)
 
 
-        gain_control.findViewById<TextView>(R.id.value).text=(settings.gain*100).toString()
+        gain_control.findViewById<TextView>(R.id.value).text=paramValueFormat.format((settings.gain*100))
 
 
     }
@@ -586,6 +602,7 @@ class Window(private val context: Context) {
 
     fun close() {
         try {
+            stopPreview()
             windowManager.removeView(rootView)
         } catch (e: Exception) {
             // Ignore exception for now, but in production, you should have some
@@ -658,7 +675,8 @@ class Window(private val context: Context) {
            }
        }else{
            val d:dataset=dataset()
-           d.datasetname= LocalDate.now().toString()
+           val sdf = SimpleDateFormat("yyyy-MM-dd", Locale.ITALY)
+           d.datasetname = sdf.format(Date())
 
            if(!video){
                d.interval = if (interval > 0.0) interval else null; //Set interval
@@ -742,19 +760,20 @@ class Window(private val context: Context) {
 
         }
 
+        /*
         //verifica se bisogna aggiornare il server
-        if(ucamera_version!="1.1.0"){
+        if(ucamera_version!="1.1.9"){
             //effettua l'aggiornamento
            // uploadFirmware()
             return;
-
-
-        }
+        }*/
 
 
         settings= api.getSettings()
 
         updateValues()
+        if (answerAddress)
+            stopPreview()
 
         if (!::s.isInitialized) {
             s=SocketIOConnection()
@@ -777,9 +796,8 @@ class Window(private val context: Context) {
                         row->
                     var device=row as JSONObject
                     if(device.get("name")=="arducam"){
-                        if(!(device.get("is_recording") as Boolean)){
-                            setAcquisitionState(false)
-                        }
+                        var isRecording = device.getBoolean("is_recording")
+                        setAcquisitionState(isRecording)
                     }
                 }
 
@@ -791,13 +809,13 @@ class Window(private val context: Context) {
                     var dataset=row as JSONObject
                     var acquisition = dataset.getJSONObject("current_camera_acquisition")
                     if (acquisition.length() != 0) {
-                        setAcquisitionState(true)
+                        //setAcquisitionState(true)
                         Handler(Looper.getMainLooper()).post {
                             status.text = "Dataset " + acquisition.get("dataset_id").toString() +
                                     " Foto " + acquisition.get("items").toString()
                         }
                     } else {
-                        setAcquisitionState(false)
+                        //setAcquisitionState(false)
                     }
                 }
 
@@ -807,8 +825,8 @@ class Window(private val context: Context) {
                 it.forEach {
                     row->
                     var location = row as JSONObject
-                    var altitude = location.getJSONArray("altitude")
-                    if (altitude.getString(1) == "BSL") {
+                    var altitude = location.optJSONArray("altitude")
+                    if (altitude != null && altitude.length() >= 2 && altitude.getString(1) == "BSL") {
                         val altitudeValue = altitude.getDouble(0)
                         Handler(Looper.getMainLooper()).post {
                             depth.text = "%.2f mt".format(altitudeValue)
@@ -828,10 +846,34 @@ class Window(private val context: Context) {
     }
 
     fun startPreview(){
-            preview.loadUrl("http://"+remote_host+":"+remote_port+"/preview")
-            preview.reload()
+        var rtspUrl = "rtsp://"+remote_host+":"+stream_port+"/camera-preview"
+        libVlc = LibVLC(preview.context, arrayListOf(
+            "--rtsp-tcp",          // forza TCP (equivalente a quello che fai con Exo)
+            "--network-caching=150" // puoi provare 150-500
+        ))
+        vlcPlayer = MediaPlayer(libVlc).apply {
+            attachViews(preview, null, false, false)
+
+            val media = Media(libVlc, Uri.parse(rtspUrl))
+            media.addOption(":rtsp-tcp")
+            media.addOption(":network-caching=150")
+            this.media = media
+            media.release()
+
+            play()
+        }
 
     }
+
+    fun stopPreview(){
+        vlcPlayer?.stop()
+        vlcPlayer?.detachViews()
+        vlcPlayer?.release()
+        vlcPlayer = null
+        libVlc?.release()
+        libVlc = null
+    }
+
     @SuppressLint("ResourceAsColor")
     fun onCameraState(connected:Boolean){
         camera_connected=connected;
@@ -841,13 +883,13 @@ class Window(private val context: Context) {
                 status.text = "Ready"
                 btn_open_config.isEnabled = true
                 btn_open_acquisition.isEnabled = true
-                preview.visibility = WebView.VISIBLE
+                preview.visibility = VLCVideoLayout.VISIBLE
             } else {
                 main_panel.setBackgroundColor(R.color.purple_200)
                 status.text = "No connected"
                 btn_open_config.isEnabled = false
                 btn_open_acquisition.isEnabled = false
-                preview.visibility = WebView.INVISIBLE
+                preview.visibility = VLCVideoLayout.INVISIBLE
 
             }
         }
@@ -855,14 +897,13 @@ class Window(private val context: Context) {
     }
 
     fun uploadFirmware(){
-        val u:Uploader=Uploader()
-        if(u.uploadFirmware(remote_host)){
-            Toast.makeText(App.activity,"Firmware aggiornato correttamente", Toast.LENGTH_SHORT);
-        }else{
-            Toast.makeText(App.activity,"Errore durante l'aggiornamento firmware. Riprovare",
-                Toast.LENGTH_SHORT);
-        }
-
+        //val u:Uploader=Uploader()
+        //if(u.uploadFirmware(remote_host)){
+        //    Toast.makeText(App.activity,"Firmware aggiornato correttamente", Toast.LENGTH_SHORT);
+        //}else{
+        //    Toast.makeText(App.activity,"Errore durante l'aggiornamento firmware. Riprovare",
+        //        Toast.LENGTH_SHORT);
+        //}
     }
 
 

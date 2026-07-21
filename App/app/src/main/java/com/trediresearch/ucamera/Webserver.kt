@@ -120,7 +120,7 @@ class Webserver {
 
     fun capture():Bitmap?{
         try {
-            var resp = apiservice.capture().execute()
+            var resp = apiservice.capture(CaptureRequest()).execute()
             var sessionResponse = resp.body()?.byteStream()
             if (sessionResponse != null) {
                 val image: Bitmap = BitmapFactory.decodeStream(sessionResponse);

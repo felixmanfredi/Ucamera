@@ -56,5 +56,6 @@ dependencies {
     implementation ("io.ktor:ktor-client-websockets:1.6.4")
     implementation ("io.socket:socket.io-client:2.0.1")
 
+    implementation("org.videolan.android:libvlc-all:3.6.0")
 
 }

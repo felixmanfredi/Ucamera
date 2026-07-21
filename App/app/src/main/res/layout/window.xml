@@ -80,76 +80,91 @@
                     android:orientation="horizontal">
 
 
-
                     <FrameLayout
                         android:layout_width="wrap_content"
                         android:layout_height="match_parent"
                         >
-                        <WebView
-                            android:id="@+id/preview"
+                    <!--
+                    <WebView
+                        android:id="@+id/preview"
+                        android:layout_width="150dp"
+                        android:layout_height="match_parent">
+
+                    </WebView>
+                    -->
+
+                        <androidx.constraintlayout.widget.ConstraintLayout
                             android:layout_width="150dp"
                             android:layout_height="match_parent">
 
-                        </WebView>
+                            <org.videolan.libvlc.util.VLCVideoLayout
+                                android:id="@+id/preview"
+                                android:layout_width="0dp"
+                                android:layout_height="0dp"
+                                app:layout_constraintBottom_toBottomOf="parent"
+                                app:layout_constraintEnd_toEndOf="parent"
+                                app:layout_constraintStart_toStartOf="parent"
+                                app:layout_constraintTop_toTopOf="parent" />
+                        </androidx.constraintlayout.widget.ConstraintLayout>
+
                         <ImageView
                             android:id="@+id/recording"
-                            android:layout_height="20dp"
                             android:layout_width="20dp"
-                            android:layout_marginTop="10dp"
+                            android:layout_height="20dp"
                             android:layout_marginLeft="10dp"
+                            android:layout_marginTop="10dp"
                             android:src="@drawable/rectangle"
                             android:visibility="gone"
 
-                            >
-                        </ImageView>
+                            ></ImageView>
 
                         <TextView
                             android:id="@+id/status"
-                            android:textSize="7pt"
                             android:layout_width="wrap_content"
                             android:layout_height="wrap_content"
-                            android:width="140dp"
                             android:layout_marginTop="10dp"
+                            android:width="140dp"
+                            android:text="Status"
                             android:textAlignment="textEnd"
                             android:textColor="@color/white"
                             android:textFontWeight="@integer/material_motion_duration_long_1"
-                            android:text="Status"></TextView>
+                            android:textSize="7pt"></TextView>
                     </FrameLayout>
 
 
-                    <LinearLayout
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="vertical"
+                    >
+
+
+
+                    <Button
+                        android:id="@+id/btn_open_acquisition"
                         android:layout_width="match_parent"
-                        android:layout_height="wrap_content"
-                        android:orientation="vertical"
-                        >
+                        android:layout_height="40dp"
 
+                        android:text="Acquisizione"></Button>
+                    <Button
+                        android:id="@+id/btn_open_config"
+                        android:layout_width="match_parent"
+                        android:layout_height="40dp"
+                        android:text="Parametri"></Button>
+                    <Button
+                        android:id="@+id/btn_open_other"
+                        android:layout_width="match_parent"
+                        android:layout_height="40dp"
+                        android:text="Altro"></Button>
 
-
-                        <Button
-                            android:id="@+id/btn_open_acquisition"
-                            android:layout_width="match_parent"
-                            android:layout_height="40dp"
-
-                            android:text="Acquisizione"></Button>
-                        <Button
-                            android:id="@+id/btn_open_config"
-                            android:layout_width="match_parent"
-                            android:layout_height="40dp"
-                            android:text="Parametri"></Button>
-                        <Button
-                            android:id="@+id/btn_open_other"
-                            android:layout_width="match_parent"
-                            android:layout_height="40dp"
-                            android:text="Altro"></Button>
-
-
-                    </LinearLayout>
 
                 </LinearLayout>
 
-            </FrameLayout>
+            </LinearLayout>
 
-            <!-- Acquisizioni -->
+        </FrameLayout>
+
+        <!-- Acquisizioni -->
             <FrameLayout
                 android:id="@+id/acquisition_panel"
                 android:background="@color/white"

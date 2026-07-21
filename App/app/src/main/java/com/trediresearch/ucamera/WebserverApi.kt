@@ -31,9 +31,10 @@ interface WebserverApi {
     fun getSettings():Call<response<settings>>
 
 
-    @GET("camera/capture")
+    @POST("camera/capture")
+    @RequestFormat(ConverterFormat.JSON)
     @ResponseFormat("image/jpeg")
-    fun capture():Call<ResponseBody>
+    fun capture(@Body body: CaptureRequest): Call<ResponseBody>
 
 
     @POST("datasets/start/")
