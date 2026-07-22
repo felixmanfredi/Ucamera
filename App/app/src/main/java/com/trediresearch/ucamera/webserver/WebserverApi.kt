@@ -1,4 +1,4 @@
-package com.trediresearch.ucamera
+package com.trediresearch.ucamera.webserver
 
 import okhttp3.ResponseBody
 import retrofit2.Call

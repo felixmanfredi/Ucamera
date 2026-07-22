@@ -1,4 +1,4 @@
-package com.trediresearch.ucamera
+package com.trediresearch.ucamera.webserver
 
 import com.google.gson.annotations.SerializedName
 import java.util.ArrayList

@@ -3,9 +3,7 @@ package com.trediresearch.ucamera
 import android.annotation.SuppressLint
 import android.app.AlertDialog
 import android.content.Context
-import android.content.Intent
 import android.graphics.PixelFormat
-import android.net.Uri
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
@@ -17,10 +15,10 @@ import android.util.Log
 import android.view.Gravity
 import android.view.LayoutInflater
 import android.view.MotionEvent
+import android.view.SurfaceView
 import android.view.View
 import android.view.View.OnTouchListener
 import android.view.WindowManager
-import android.webkit.WebView
 import android.widget.Button
 import android.widget.EditText
 import android.widget.FrameLayout
@@ -29,7 +27,7 @@ import android.widget.LinearLayout
 import android.widget.TextView
 import android.widget.Toast
 import androidx.annotation.RequiresApi
-import androidx.compose.material.AlertDialog
+import com.trediresearch.ucamera.video.SerialH264Player
 import io.socket.client.Socket
 import io.socket.emitter.Emitter
 import org.json.JSONObject
@@ -38,12 +36,15 @@ import java.util.Date
 import java.util.Locale
 
 import org.videolan.libvlc.LibVLC
-import org.videolan.libvlc.Media
 import org.videolan.libvlc.MediaPlayer
 import org.videolan.libvlc.util.VLCVideoLayout
 import java.text.DecimalFormat
 import java.text.DecimalFormatSymbols
-
+import android.view.SurfaceHolder
+import com.trediresearch.ucamera.video.SerialPortConnection
+import com.trediresearch.ucamera.webserver.Webserver
+import com.trediresearch.ucamera.webserver.dataset
+import com.trediresearch.ucamera.webserver.settings
 
 @RequiresApi(Build.VERSION_CODES.O)
 class Window(private val context: Context) {
@@ -58,8 +59,8 @@ class Window(private val context: Context) {
     var interval=5.0
     var camera_connected=false;
 
-    lateinit var settings:settings
-    lateinit var api:Webserver
+    lateinit var settings: settings
+    lateinit var api: Webserver
     lateinit var s: SocketIOConnection
 
     private val windowManager = context.getSystemService(Context.WINDOW_SERVICE) as WindowManager
@@ -86,7 +87,9 @@ class Window(private val context: Context) {
 
     lateinit var btn_preview_image:Button
     lateinit var btn_collapse:Button
-    lateinit var preview: VLCVideoLayout //:WebView
+    //lateinit var preview: VLCVideoLayout //:WebView
+    lateinit var preview: SurfaceView //:WebView
+
     lateinit var status:TextView
     lateinit var depth:TextView
     lateinit var recording:ImageView
@@ -99,7 +102,7 @@ class Window(private val context: Context) {
 
     private var libVlc: LibVLC? = null
     private var vlcPlayer: MediaPlayer? = null
-
+    private var videoPlayer: SerialH264Player? = null
     private val paramValueFormat = DecimalFormat("0.##").apply {
         decimalFormatSymbols = DecimalFormatSymbols.getInstance(Locale.getDefault())
     }
@@ -121,6 +124,8 @@ class Window(private val context: Context) {
         PixelFormat.TRANSLUCENT
     )
 
+
+    private var serialPort: SerialPortConnection? = null
 
     private fun getCurrentDisplayMetrics(): DisplayMetrics {
         val dm = DisplayMetrics()
@@ -229,7 +234,26 @@ class Window(private val context: Context) {
         btn_open_config=rootView.findViewById(R.id.btn_open_config) as Button
         btn_collapse=rootView.findViewById(R.id.btn_collapse) as Button
 
-        preview=rootView.findViewById(R.id.preview) as VLCVideoLayout //as WebView
+        //preview=rootView.findViewById(R.id.preview) as VLCVideoLayout //as WebView
+        preview=rootView.findViewById(R.id.preview) as SurfaceView //as WebView
+
+        preview.holder.addCallback(object : SurfaceHolder.Callback {
+            override fun surfaceCreated(holder: SurfaceHolder) {
+                startPreview()
+            }
+
+            override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) {
+                // eventuale gestione resize, se serve
+            }
+
+            override fun surfaceDestroyed(holder: SurfaceHolder) {
+                // eventuale cleanup, es. stopPreview()
+            }
+        })
+
+
+
+
         //rectimage=rootView.findViewById(R.id.rect) as ImageView
         status=rootView.findViewById(R.id.status) as TextView
         depth=rootView.findViewById(R.id.depth) as TextView
@@ -499,8 +523,10 @@ class Window(private val context: Context) {
             startAcquisition(true)
         }
 
-
+        serialPort = SerialPortConnection.newBuilder("/dev/ttyHS0", 4000000).flags(8192).build()
+        serialPort?.openConnection()
         updateConnection()
+
     }
 
     fun collapse(){
@@ -592,8 +618,14 @@ class Window(private val context: Context) {
 
     fun open() {
         try {
+
+
             windowManager.addView(rootView, windowParams)
+
+
+
         } catch (e: Exception) {
+            Log.e("UCamera",e.message.toString())
             // Ignore exception for now, but in production, you should have some
             // warning for the user here.
         }
@@ -674,7 +706,7 @@ class Window(private val context: Context) {
                Toast.makeText(App.activity,"Errore durante l'arresto dell'acquisizione", Toast.LENGTH_LONG).show()
            }
        }else{
-           val d:dataset=dataset()
+           val d: dataset = dataset()
            val sdf = SimpleDateFormat("yyyy-MM-dd", Locale.ITALY)
            d.datasetname = sdf.format(Date())
 
@@ -841,10 +873,16 @@ class Window(private val context: Context) {
         if (!s.isConnected()) {
             s.socket.connect()
         }
-        startPreview()
+        //startPreview()
 
     }
+    fun startPreview(){
 
+        videoPlayer = SerialH264Player( serialPort, preview.holder.surface)
+        videoPlayer?.start()
+
+    }
+    /*
     fun startPreview(){
         var rtspUrl = "rtsp://"+remote_host+":"+stream_port+"/camera-preview"
         libVlc = LibVLC(preview.context, arrayListOf(
@@ -872,6 +910,10 @@ class Window(private val context: Context) {
         vlcPlayer = null
         libVlc?.release()
         libVlc = null
+    }
+    */
+    fun stopPreview(){
+        videoPlayer?.stop()
     }
 
     @SuppressLint("ResourceAsColor")

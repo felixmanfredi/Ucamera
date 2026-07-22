@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- ESP32 con USB nativa (CDC/ACM - S2, S3, C3, ecc.) -->
+    <usb-device vendor-id="12346" /> <!-- 0x303A -->
+
+    <!-- ESP32 tradizionali con convertitori seriali integrati sulla scheda -->
+    <usb-device vendor-id="4292" />  <!-- CP2102 / CP2104 -->
+    <usb-device vendor-id="6790" />  <!-- CH340 / CH341 -->
+    <usb-device vendor-id="1027" />  <!-- FTDI (FT232R, ecc.) -->
+    <usb-device vendor-id="1659" />  <!-- PL2303 -->
+
+    <!-- Opzionale: puoi lasciare una regola generica per accettare QUALSIASI dispositivo seriale -->
+    <!-- <usb-device /> -->
+</resources>

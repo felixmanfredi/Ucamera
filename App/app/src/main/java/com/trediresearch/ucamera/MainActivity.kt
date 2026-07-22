@@ -74,6 +74,8 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+
+
     @RequiresApi(Build.VERSION_CODES.S)
     private fun checkPermissionGiven() {
 

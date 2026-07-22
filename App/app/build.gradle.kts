@@ -57,5 +57,4 @@ dependencies {
     implementation ("io.socket:socket.io-client:2.0.1")
 
     implementation("org.videolan.android:libvlc-all:3.6.0")
-
 }

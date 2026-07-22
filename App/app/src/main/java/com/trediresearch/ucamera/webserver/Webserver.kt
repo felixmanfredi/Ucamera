@@ -1,4 +1,4 @@
-package com.trediresearch.ucamera
+package com.trediresearch.ucamera.webserver
 
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
@@ -8,6 +8,7 @@ import android.os.Looper
 import android.util.Log
 import android.widget.Toast
 import androidx.annotation.RequiresApi
+import com.trediresearch.ucamera.App
 import okhttp3.OkHttpClient
 import okhttp3.RequestBody
 import okhttp3.ResponseBody
@@ -16,7 +17,7 @@ import retrofit2.Retrofit
 import retrofit2.converter.gson.GsonConverterFactory
 import retrofit2.converter.scalars.ScalarsConverterFactory
 import java.lang.reflect.Type
-import java.net.InetAddress
+import java.net.ConnectException
 import java.util.concurrent.TimeUnit
 
 
@@ -26,7 +27,13 @@ class Webserver {
     lateinit var apiservice: WebserverApi
 
     fun init(url:String):Boolean {
-        var client=okhttp3.OkHttpClient.Builder()
+
+        val bridge = SerialBridge(App.activity).apply { //connect()
+            }
+
+
+        var client= OkHttpClient.Builder()
+            .addInterceptor(SerialTransportInterceptor(bridge))
             .readTimeout(2, TimeUnit.SECONDS)
             .writeTimeout(2, TimeUnit.SECONDS)
             .connectTimeout(2, TimeUnit.SECONDS)
@@ -83,11 +90,11 @@ class Webserver {
                 }
             }
         }
-        catch (e:java.net.ConnectException){
-            throw  java.net.ConnectException()
+        catch (e: ConnectException){
+            throw ConnectException()
         }
         catch (e:Exception){
-            throw  java.net.ConnectException()
+            throw ConnectException()
             Log.e("UCamera",e.message.toString())
         }
 
@@ -106,12 +113,12 @@ class Webserver {
                 }
             }
         }
-        catch (e:java.net.ConnectException){
-            throw  java.net.ConnectException()
+        catch (e: ConnectException){
+            throw ConnectException()
         }
         catch (e:Exception){
             Log.e("UCamera",e.message.toString())
-            throw  java.net.ConnectException()
+            throw ConnectException()
         }
 
         return settings()
