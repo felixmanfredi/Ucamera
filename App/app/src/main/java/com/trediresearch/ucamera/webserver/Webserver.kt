@@ -9,6 +9,7 @@ import android.util.Log
 import android.widget.Toast
 import androidx.annotation.RequiresApi
 import com.trediresearch.ucamera.App
+import com.trediresearch.ucamera.video.SerialPortConnection
 import okhttp3.OkHttpClient
 import okhttp3.RequestBody
 import okhttp3.ResponseBody
@@ -26,18 +27,22 @@ class Webserver {
     lateinit var retrofit: Retrofit
     lateinit var apiservice: WebserverApi
 
-    fun init(url:String):Boolean {
+    fun init(url:String, serialPort: SerialPortConnection? = null):Boolean {
 
-        val bridge = SerialBridge(App.activity).apply { //connect()
-            }
-
-
-        var client= OkHttpClient.Builder()
-            .addInterceptor(SerialTransportInterceptor(bridge))
+        val clientBuilder = OkHttpClient.Builder()
             .readTimeout(2, TimeUnit.SECONDS)
             .writeTimeout(2, TimeUnit.SECONDS)
             .connectTimeout(2, TimeUnit.SECONDS)
-            .build()
+
+        // REST-over-serial: when a SerialPortConnection is supplied, every Retrofit call is
+        // tunneled over it instead of real HTTP (`url` is still needed as Retrofit's base URL).
+        if (serialPort != null) {
+            val bridge = SerialBridge(App.activity, serialPort)
+            bridge.connect()
+            clientBuilder.addInterceptor(SerialTransportInterceptor(bridge))
+        }
+
+        var client = clientBuilder.build()
         try {
 
             retrofit = Retrofit.Builder()

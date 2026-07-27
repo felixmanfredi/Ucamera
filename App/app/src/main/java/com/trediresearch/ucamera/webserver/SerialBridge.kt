@@ -10,7 +10,7 @@ import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.TimeoutException
 
-class SerialBridge(private val context: Context,private val serialPort: SerialPortConnection) {
+class SerialBridge(private val context: Context, private val serialPort: SerialPortConnection? = null) {
 
     //private var port: UsbSerialPort? = null
     private val ioExecutor = Executors.newSingleThreadExecutor()

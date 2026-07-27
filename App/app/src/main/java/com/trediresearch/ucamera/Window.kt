@@ -28,6 +28,7 @@ import android.widget.TextView
 import android.widget.Toast
 import androidx.annotation.RequiresApi
 import com.trediresearch.ucamera.video.SerialH264Player
+import com.trediresearch.ucamera.video.JpegUdpPlayer
 import io.socket.client.Socket
 import io.socket.emitter.Emitter
 import org.json.JSONObject
@@ -52,6 +53,11 @@ class Window(private val context: Context) {
     var remote_host="192.168.1.145"
     var remote_port=45032
     var stream_port=8877
+    // JPEG-over-UDP FPV preview (streaming/jpeg_udp_streamer.py on the Arducam side).
+    // Off by default: set useFpvUdpPreview=true to use it instead of SerialH264Player.
+    var useFpvUdpPreview=true
+    var fpvUdpPort=5600
+    var fpvUdpMulticastGroup: String?="239.255.0.2" // e.g. "239.255.0.2" if the sender's broadcast_addr is multicast
     var onAcquisition=false;
     val windowHeight=150
     val windowHeightMax=300
@@ -103,6 +109,7 @@ class Window(private val context: Context) {
     private var libVlc: LibVLC? = null
     private var vlcPlayer: MediaPlayer? = null
     private var videoPlayer: SerialH264Player? = null
+    private var udpVideoPlayer: JpegUdpPlayer? = null
     private val paramValueFormat = DecimalFormat("0.##").apply {
         decimalFormatSymbols = DecimalFormatSymbols.getInstance(Locale.getDefault())
     }
@@ -748,7 +755,7 @@ class Window(private val context: Context) {
     fun updateConnection(answerAddress: Boolean=false){
 
         api= Webserver();
-        api.init("http://"+remote_host+":"+remote_port)
+        api.init("http://"+remote_host+":"+remote_port, serialPort)
 
         var ucamera_version=""
         try{
@@ -877,10 +884,13 @@ class Window(private val context: Context) {
 
     }
     fun startPreview(){
-
-        videoPlayer = SerialH264Player( serialPort, preview.holder.surface)
-        videoPlayer?.start()
-
+        if (useFpvUdpPreview) {
+            udpVideoPlayer = JpegUdpPlayer(fpvUdpPort, preview.holder.surface, fpvUdpMulticastGroup, context)
+            udpVideoPlayer?.start()
+        } else {
+            videoPlayer = SerialH264Player( serialPort, preview.holder.surface)
+            videoPlayer?.start()
+        }
     }
     /*
     fun startPreview(){
@@ -914,6 +924,7 @@ class Window(private val context: Context) {
     */
     fun stopPreview(){
         videoPlayer?.stop()
+        udpVideoPlayer?.stop()
     }
 
     @SuppressLint("ResourceAsColor")
