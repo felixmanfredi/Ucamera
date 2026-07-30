@@ -41,3 +41,43 @@ data class dataset(
 data class CaptureRequest(
     @SerializedName("flash") val flash: Boolean = false)
 
+// Sottoinsieme minimo di GET /datasets/ - serve a Webserver.getAcquisitionStatus()/
+// isAcquisitionRunning() per sapere se un'acquisizione e' in corso (anche se avviata
+// da un'altra sessione) e mostrare "Dataset X Foto Y" (Gson ignora gli altri campi
+// della risposta, non serve mappare l'intero oggetto dataset).
+data class DatasetInfo(
+    @SerializedName("dataset_id") val dataset_id: Int = 0,
+    @SerializedName("completed") val completed: Boolean = true,
+    @SerializedName("items") val items: Int = 0,
+)
+
+// Risultato di Webserver.getAcquisitionStatus(), usato per il polling periodico dello
+// stato (sostituisce il device_status via Socket.IO, che richiede un vero percorso IP
+// e non funziona sul solo bridge seriale/radio Skydroid).
+data class AcquisitionStatus(
+    val running: Boolean,
+    val datasetId: Int,
+    val items: Int,
+)
+
+// GET /location_system/status - rotta custom (non vendor) aggiunta a
+// communication/webserver.py sul device per esporre l'ultimo fix GPS/altimetro via
+// REST, dato che il location_status via Socket.IO non e' raggiungibile sul solo
+// bridge seriale/radio Skydroid. Mappiamo solo altitude (usata per il depth display),
+// Gson ignora latitude/longitude/timestamp che il server include comunque.
+data class AltitudeInfo(
+    @SerializedName("value") val value: Double? = null,
+    @SerializedName("ref") val ref: String? = null,
+)
+
+data class LocationInfo(
+    @SerializedName("altitude") val altitude: AltitudeInfo? = null,
+)
+
+// PUT /camera/exec - comando generico gia' esposto dal server vendor (arriva a
+// CameraInterface.exec(command, **params)); "autofocus" e' gestito da noi in
+// arducam.py, vedi Webserver.triggerAutofocus().
+data class ExecCommandRequest(
+    @SerializedName("cmd") val cmd: String
+)
+

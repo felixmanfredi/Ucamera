@@ -57,6 +57,20 @@ class MainActivity : AppCompatActivity() {
         loadConfig()
         checkPermissionGiven()
 
+        // MainActivity usa un tema floating/trasparente (Theme.UCamera.Translucent) e
+        // non fa mai setContentView(): la sua finestra resta a dimensione zero e
+        // invisibile, ma restando "resumed" diventa comunque mCurrentFocus di sistema
+        // (verificato con dumpsys window: finestra 0x0, mHasSurface=false, eppure
+        // mCurrentFocus la punta) - l'InputDispatcher resta in attesa di una finestra a
+        // fuoco che non sara' mai pronta/visibile, bloccando i tocchi su TUTTE le altre
+        // finestre finche' un tasto di sistema (home/recenti) non forza il cambio di
+        // focus. Il servizio overlay sopravvive comunque (stopWithTask="false" nel
+        // manifest), quindi si puo' mandare l'Activity in background non appena i
+        // permessi sono gia' a posto (se non lo sono ancora, resta in foreground per
+        // completare i dialog di richiesta permessi/overlay al primo avvio).
+        if (Settings.canDrawOverlays(this)) {
+            moveTaskToBack(true)
+        }
     }
 
     override fun onDestroy() {

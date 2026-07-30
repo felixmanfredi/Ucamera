@@ -6,6 +6,7 @@ import java.io.InputStream;
 import java.io.OutputStream;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.locks.Condition;
 import java.util.concurrent.locks.Lock;
 
@@ -18,7 +19,7 @@ public class SerialPortConnection {
 
     private int dataBits;
 
-    private Delegate delegate;
+    private final List<Delegate> delegates = new CopyOnWriteArrayList<>();
 
     private int fifoSize;
 
@@ -105,14 +106,14 @@ public class SerialPortConnection {
     }
 
     private void received(byte[] paramArrayOfbyte, int paramInt) {
-        Delegate delegate = this.delegate;
-        if (delegate != null)
+        for (Delegate delegate : this.delegates) {
             delegate.received(paramArrayOfbyte, paramInt);
+        }
     }
 
     public void closeConnection() throws IOException {
         this.connect = false;
-        this.delegate = null;
+        this.delegates.clear();
         ForwardThread forwardThread = this.mForwardThread;
         if (forwardThread != null) {
             forwardThread.interrupt();
@@ -165,9 +166,9 @@ public class SerialPortConnection {
             this.mReadThread = readThread;
             readThread.start();
         }
-        Delegate delegate = this.delegate;
-        if (delegate != null)
+        for (Delegate delegate : this.delegates) {
             delegate.connect();
+        }
     }
 
     public void sendData(final byte[] bytes) {
@@ -188,8 +189,12 @@ public class SerialPortConnection {
             }).run();
     }
 
-    public void setDelegate(Delegate paramDelegate) {
-        this.delegate = paramDelegate;
+    public void addDelegate(Delegate paramDelegate) {
+        this.delegates.add(paramDelegate);
+    }
+
+    public void removeDelegate(Delegate paramDelegate) {
+        this.delegates.remove(paramDelegate);
     }
 
     public static final class Builder {

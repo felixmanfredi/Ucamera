@@ -96,12 +96,12 @@
                         <androidx.constraintlayout.widget.ConstraintLayout
                             android:layout_width="150dp"
                             android:layout_height="match_parent">
-                            <SurfaceView
+                            <TextureView
                                 android:id="@+id/preview"
                                 android:layout_width="match_parent"
                                 android:layout_height="match_parent">
 
-                            </SurfaceView>
+                            </TextureView>
                             <!--
 
                             <org.videolan.libvlc.util.VLCVideoLayout
@@ -241,7 +241,30 @@
                     <include android:id="@+id/contrast_control" layout="@layout/layout_param"></include>
                     <include android:id="@+id/sharpness_control" layout="@layout/layout_param"></include>
                     <include android:id="@+id/saturation_control" layout="@layout/layout_param"></include>
-                    <include android:id="@+id/lensposition_control" layout="@layout/layout_param"></include>
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:orientation="horizontal"
+                        android:gravity="center_vertical">
+
+                        <include
+                            android:id="@+id/lensposition_control"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            layout="@layout/layout_param"></include>
+
+                        <Button
+                            android:id="@+id/btn_autofocus"
+                            android:layout_width="40dp"
+                            android:layout_height="40dp"
+                            android:layout_marginStart="8dp"
+                            android:minWidth="0dp"
+                            android:paddingLeft="0dp"
+                            android:paddingRight="0dp"
+                            android:text="AF">
+                        </Button>
+
+                    </LinearLayout>
                     <include android:id="@+id/exposure_control" layout="@layout/layout_param"></include>
                     <include android:id="@+id/exposuretime_control" layout="@layout/layout_param"></include>
                     <include android:id="@+id/gain_control" layout="@layout/layout_param"></include>

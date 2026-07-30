@@ -52,6 +52,22 @@ class SerialH264Player(
         nalQueue.offer(nalUnit)
     }
 
+    private val delegate = object : SerialPortConnection.Delegate {
+        override fun connect() {
+            Log.d(TAG, "Serial port opened")
+        }
+
+        override fun received(param1ArrayOfbyte: ByteArray, param1Int: Int) {
+            try {
+                if (param1Int > 0) {
+                    deframer.feed(param1ArrayOfbyte, param1Int)
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Errore lettura seriale", e)
+            }
+        }
+    }
+
     fun start() {
         setupSerial()
         setupDecoder()
@@ -63,6 +79,7 @@ class SerialH264Player(
 
     fun stop() {
         running = false
+        serialPort?.removeDelegate(delegate)
         readerThread?.join(1000)
         decoder?.let {
             try {
@@ -86,27 +103,7 @@ class SerialH264Player(
         */
         //serialPort = SerialPortConnection.newBuilder("/dev/ttyHS0", 4000000).flags(8192).build()
 
-        //serialPort.setDelegate(object : UsbSerialConnection.Delegate {
-        serialPort?.setDelegate(object : SerialPortConnection.Delegate {
-
-            override fun connect() {
-                Log.d(TAG, "Serial port opened");
-            }
-
-            override fun received(param1ArrayOfbyte: ByteArray, param1Int: Int) {
-                try {
-                    if (param1Int > 0) {
-                        deframer.feed(param1ArrayOfbyte, param1Int)
-                    }
-                } catch (e: Exception) {
-                    Log.e(TAG, "Errore lettura seriale", e)
-                }
-
-            }
-        })
-
-
-
+        serialPort?.addDelegate(delegate)
     }
 
     private fun setupDecoder() {

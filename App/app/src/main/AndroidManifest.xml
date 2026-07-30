@@ -35,8 +35,6 @@
     <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>
     <uses-permission android:name="android.permission.INTERNET" /> <!-- bibo01 : hardware option -->
-    <!-- Needed only if JpegUdpPlayer is used with a multicast broadcast_addr -->
-    <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE" />
     <uses-feature
         android:name="android.hardware.bluetooth"
         android:required="false" />

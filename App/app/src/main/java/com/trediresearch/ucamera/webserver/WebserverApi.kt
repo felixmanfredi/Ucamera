@@ -37,6 +37,24 @@ interface WebserverApi {
     fun capture(@Body body: CaptureRequest): Call<ResponseBody>
 
 
+    // X-Poll-Timeout: usata solo dal polling periodico (Window.statusPollRunnable) -
+    // timeout piu' corto del default (vedi SerialTransportInterceptor.POLL_TIMEOUT_HEADER)
+    // cosi' un ciclo lento/perso non tiene il lock di SerialBridge bloccando azioni
+    // interattive dell'utente (es. cambio impostazioni) per 20s dietro di se'.
+    @Headers("X-Poll-Timeout: 6000")
+    @GET("datasets/")
+    @RequestFormat(ConverterFormat.JSON)
+    @ResponseFormat("application/json")
+    fun getDatasets():Call<response<List<DatasetInfo>>>
+
+    // Rotta custom (non presente nel firmware/webserver vendor originale) aggiunta
+    // sul device per esporre l'ultimo fix GPS/altimetro via REST - vedi LocationInfo.
+    @Headers("X-Poll-Timeout: 6000")
+    @GET("location_system/status")
+    @RequestFormat(ConverterFormat.JSON)
+    @ResponseFormat("application/json")
+    fun getLocationStatus():Call<response<LocationInfo>>
+
     @POST("datasets/start/")
     @RequestFormat(ConverterFormat.JSON)
     @ResponseFormat("application/json")
@@ -53,6 +71,12 @@ interface WebserverApi {
     @RequestFormat(ConverterFormat.JSON)
     @ResponseFormat("application/json")
     fun startVideo(@Body body:dataset):Call<response<dataset>>
+
+    @Headers("Content-Type: application/json")
+    @PUT("camera/exec")
+    @RequestFormat(ConverterFormat.JSON)
+    @ResponseFormat("application/json")
+    fun execCameraCommand(@Body body: ExecCommandRequest): Call<response<Nothing>>
 }
 
 

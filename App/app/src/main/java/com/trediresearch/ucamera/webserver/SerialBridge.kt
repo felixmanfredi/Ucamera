@@ -16,33 +16,38 @@ class SerialBridge(private val context: Context, private val serialPort: SerialP
     private val ioExecutor = Executors.newSingleThreadExecutor()
 
     // Coda di risposte in attesa, keyed by requestId
-    private val pendingResponses = ConcurrentHashMap<Long, CompletableFuture<Pair<Int, String>>>()
+    private val pendingResponses = ConcurrentHashMap<Long, CompletableFuture<Pair<Int, ByteArray>>>()
     private val reader = SerialFrameReader { sync0, sync1, payload ->
         if (sync0 == SerialFrame.REST_RESP_SYNC_0 && sync1 == SerialFrame.REST_RESP_SYNC_1) {
             handleResponseFrame(payload)
         }
     }
 
-    fun connect(): Boolean{
-        serialPort?.setDelegate(object : SerialPortConnection.Delegate {
+    private val delegate = object : SerialPortConnection.Delegate {
 
-            override fun connect() {
+        override fun connect() {
 
-            }
+        }
 
-            override fun received(param1ArrayOfbyte: ByteArray, param1Int: Int) {
-                try {
-                    if (param1Int > 0) {
-                        reader.feed(param1ArrayOfbyte, param1Int)
-                    }
-                } catch (e: Exception) {
-                    //Log.e(TAG, "Errore lettura seriale", e)
+        override fun received(param1ArrayOfbyte: ByteArray, param1Int: Int) {
+            try {
+                if (param1Int > 0) {
+                    reader.feed(param1ArrayOfbyte, param1Int)
                 }
-
+            } catch (e: Exception) {
+                //Log.e(TAG, "Errore lettura seriale", e)
             }
-        })
 
+        }
+    }
+
+    fun connect(): Boolean{
+        serialPort?.addDelegate(delegate)
         return true;
+    }
+
+    fun disconnect() {
+        serialPort?.removeDelegate(delegate)
     }
 
     /*
@@ -67,30 +72,44 @@ class SerialBridge(private val context: Context, private val serialPort: SerialP
         return true
     }*/
 
-    // Nota: qui usiamo una richiesta alla volta (fire-and-wait).
-    // Se ti serve concorrenza, aggiungi un requestId nel payload REST
-    // e fai il match nella risposta invece di assumere serializzazione.
-    fun sendRequestAndAwait(payload: ByteArray, timeoutMs: Long = 8000): Pair<Int, String> {
-        val future = CompletableFuture<Pair<Int, String>>()
-        pendingResponses[0L] = future
+    // Una richiesta alla volta (fire-and-wait, chiave fissa pendingResponses[0L]).
+    // Ora che le chiamate girano su thread separati (fix ANR), due richieste
+    // concorrenti si accavallerebbero sullo stesso slot: la seconda sovrascrive
+    // il future della prima, che resta orfano finche' non scatta il timeout -
+    // apparendo come "Timeout risposta dall'ESP32" anche se la risposta vera e'
+    // arrivata (solo abbinata alla richiesta sbagliata). Il lock forza la vera
+    // serializzazione (comunque e' un solo filo seriale fisico, non si perde
+    // parallelismo reale) invece di richiedere debounce corretto in ogni singolo
+    // punto della UI che chiama l'API.
+    private val requestLock = Any()
 
-        val frame = SerialFrame.encode(SerialFrame.REST_SYNC_0, SerialFrame.REST_SYNC_1, payload)
-        serialPort?.outputStream?.write(frame)
+    // 20s: deve restare comodamente sopra il timeout HTTP dell'ESP32 (15s, vedi
+    // main.cpp handleRestRequest) + margine per il giro seriale/radio Skydroid.
+    fun sendRequestAndAwait(payload: ByteArray, timeoutMs: Long = 20000): Pair<Int, ByteArray> {
+        synchronized(requestLock) {
+            val future = CompletableFuture<Pair<Int, ByteArray>>()
+            pendingResponses[0L] = future
 
-        return try {
-            future.get(timeoutMs, TimeUnit.MILLISECONDS)
-        } catch (e: TimeoutException) {
-            pendingResponses.remove(0L)
-            throw IOException("Timeout risposta dall'ESP32", e)
+            val frame = SerialFrame.encode(SerialFrame.REST_SYNC_0, SerialFrame.REST_SYNC_1, payload)
+            serialPort?.outputStream?.write(frame)
+
+            return try {
+                future.get(timeoutMs, TimeUnit.MILLISECONDS)
+            } catch (e: TimeoutException) {
+                pendingResponses.remove(0L)
+                throw IOException("Timeout risposta dall'ESP32", e)
+            }
         }
     }
 
+    // Il corpo puo' essere binario (es. JPEG per /camera/capture): solo il prefisso
+    // "codice\n" e' testo, quindi si decodifica come ASCII solo quella parte e il resto
+    // resta ByteArray grezzo, senza mai passare per un round-trip UTF-8 che lo corromperebbe.
     private fun handleResponseFrame(payload: ByteArray) {
-        val text = String(payload, Charsets.UTF_8)
-        val idx = text.indexOf('\n')
+        val idx = payload.indexOf('\n'.code.toByte())
         if (idx < 0) return
-        val code = text.substring(0, idx).trim().toIntOrNull() ?: -1
-        val body = text.substring(idx + 1)
+        val code = String(payload, 0, idx, Charsets.US_ASCII).trim().toIntOrNull() ?: -1
+        val body = payload.copyOfRange(idx + 1, payload.size)
         pendingResponses.remove(0L)?.complete(code to body)
     }
 }

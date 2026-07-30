@@ -24,6 +24,13 @@ import java.util.concurrent.TimeUnit
 
 class Webserver {
 
+    companion object {
+        // Sentinel per startDataset()/startVideo(): il server ha rifiutato l'avvio
+        // perche' un'acquisizione e' gia' aperta (non e' un errore, e' un
+        // disallineamento di stato tra app e server - vedi Window.startAcquisition()).
+        const val ALREADY_RUNNING = -2
+    }
+
     lateinit var retrofit: Retrofit
     lateinit var apiservice: WebserverApi
 
@@ -77,7 +84,16 @@ class Webserver {
                 }
             }
         }catch (e:Exception){
-
+            Log.e("UCamera","setSettings: "+e.message.toString())
+            // La risposta puo' essersi persa sul bridge seriale/radio anche se il set
+            // e' riuscito lato server (stesso problema visto per start/stop dataset,
+            // vedi verifiche con isAcquisitionRunning()): rilegge le impostazioni reali
+            // invece di assumere un errore che magari non c'e' stato.
+            try {
+                if (getSettings() == settings) return true
+            } catch (e2: Exception) {
+                Log.e("UCamera","setSettings verify: "+e2.message.toString())
+            }
         }
 
         return false
@@ -139,11 +155,50 @@ class Webserver {
                 return image
             }
         }catch (e:Exception){
-
+            Log.e("UCamera","capture: "+e.message.toString())
         }
         return null
     }
 
+
+    // Interroga il dataset piu' recente (id piu' alto): se non e' "completed" c'e'
+    // un'acquisizione in corso. Usato sia per risincronizzare onAcquisition
+    // all'avvio/riconnessione (anche se l'acquisizione e' stata avviata da un'altra
+    // sessione) sia dal polling periodico che sostituisce il device_status via
+    // Socket.IO (non raggiungibile sul solo bridge seriale/radio Skydroid).
+    fun getAcquisitionStatus(): AcquisitionStatus? {
+        try {
+            val resp = apiservice.getDatasets().execute()
+            val sessionResponse = resp.body()
+            if (sessionResponse != null && sessionResponse.status == "success") {
+                val datasets = sessionResponse.data.getOrNull(0) ?: return null
+                val latest = datasets.maxByOrNull { it.dataset_id } ?: return AcquisitionStatus(false, 0, 0)
+                return AcquisitionStatus(!latest.completed, latest.dataset_id, latest.items)
+            }
+        }catch (e:Exception){
+            Log.e("UCamera","getAcquisitionStatus (polling): "+e.message.toString())
+        }
+        return null
+    }
+
+    fun isAcquisitionRunning(): Boolean = getAcquisitionStatus()?.running ?: false
+
+    // Profondita' in metri (sotto il livello del mare, "BSL") dall'ultimo fix
+    // altimetro - null se non c'e' ancora un fix o se il riferimento e' ASL (sopra
+    // il livello del mare, non rilevante per il depth display).
+    fun getDepthMeters(): Double? {
+        try {
+            val resp = apiservice.getLocationStatus().execute()
+            val sessionResponse = resp.body()
+            if (sessionResponse != null && sessionResponse.status == "success") {
+                val altitude = sessionResponse.data.getOrNull(0)?.altitude ?: return null
+                if (altitude.ref == "BSL" && altitude.value != null) return altitude.value
+            }
+        }catch (e:Exception){
+            Log.e("UCamera","getDepthMeters (polling): "+e.message.toString())
+        }
+        return null
+    }
 
     fun startDataset(dataset: dataset): Int {
         try {
@@ -156,15 +211,22 @@ class Webserver {
                 if (sessionResponse.status == "success") {
                     return sessionResponse.data[0].dataset_id
                 }else{
+                    var alreadyRunning = false
                     for(m in sessionResponse.message) {
+                        if (m.contains("already running", ignoreCase = true)) alreadyRunning = true
                         Handler(Looper.getMainLooper()).post {
                             Toast.makeText(App.activity, m, Toast.LENGTH_SHORT).show()
                         }
                     }
+                    if (alreadyRunning) return ALREADY_RUNNING
                 }
             }
         }catch (e:Exception){
-
+            Log.e("UCamera","startDataset: "+e.message.toString())
+            // La risposta puo' essersi persa sul bridge seriale/radio anche se lo
+            // start e' riuscito lato server: verifica lo stato reale invece di
+            // assumere un errore.
+            if (isAcquisitionRunning()) return ALREADY_RUNNING
         }
 
         return -1
@@ -183,10 +245,25 @@ class Webserver {
                 }
             }
        }catch (e:Exception){
-
+           Log.e("UCamera","stopDataset: "+e.message.toString())
        }
 
+        // La risposta puo' essersi persa sul bridge seriale/radio anche se lo stop
+        // e' riuscito lato server (stesso problema visto per startDataset): verifica
+        // lo stato reale invece di assumere un errore che magari non c'e' stato.
+        return !isAcquisitionRunning()
+    }
 
+    fun triggerAutofocus(): Boolean {
+        try {
+            val resp = apiservice.execCameraCommand(ExecCommandRequest("autofocus")).execute()
+            val sessionResponse = resp.body()
+            if (sessionResponse != null && sessionResponse.status == "success") {
+                return true
+            }
+        }catch (e:Exception){
+            Log.e("UCamera","triggerAutofocus: "+e.message.toString())
+        }
         return false
     }
 
@@ -201,15 +278,19 @@ class Webserver {
                 if (sessionResponse.status == "success") {
                     return sessionResponse.data[0].dataset_id
                 }else{
+                    var alreadyRunning = false
                     for(m in sessionResponse.message) {
+                        if (m.contains("already running", ignoreCase = true)) alreadyRunning = true
                         Handler(Looper.getMainLooper()).post {
                             Toast.makeText(App.activity, m, Toast.LENGTH_SHORT).show()
                         }
                     }
+                    if (alreadyRunning) return ALREADY_RUNNING
                 }
             }
         }catch (e:Exception){
-
+            Log.e("UCamera","startVideo: "+e.message.toString())
+            if (isAcquisitionRunning()) return ALREADY_RUNNING
         }
 
         return -1

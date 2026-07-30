@@ -15,7 +15,6 @@ import android.util.Log
 import android.view.Gravity
 import android.view.LayoutInflater
 import android.view.MotionEvent
-import android.view.SurfaceView
 import android.view.View
 import android.view.View.OnTouchListener
 import android.view.WindowManager
@@ -28,7 +27,7 @@ import android.widget.TextView
 import android.widget.Toast
 import androidx.annotation.RequiresApi
 import com.trediresearch.ucamera.video.SerialH264Player
-import com.trediresearch.ucamera.video.JpegUdpPlayer
+import com.trediresearch.ucamera.video.SerialJpegPlayer
 import io.socket.client.Socket
 import io.socket.emitter.Emitter
 import org.json.JSONObject
@@ -41,11 +40,15 @@ import org.videolan.libvlc.MediaPlayer
 import org.videolan.libvlc.util.VLCVideoLayout
 import java.text.DecimalFormat
 import java.text.DecimalFormatSymbols
-import android.view.SurfaceHolder
+import android.view.Surface
+import android.graphics.SurfaceTexture
+import android.view.TextureView
 import com.trediresearch.ucamera.video.SerialPortConnection
 import com.trediresearch.ucamera.webserver.Webserver
 import com.trediresearch.ucamera.webserver.dataset
 import com.trediresearch.ucamera.webserver.settings
+
+enum class FpvPreviewMode { SERIAL_H264, JPEG_SERIAL }
 
 @RequiresApi(Build.VERSION_CODES.O)
 class Window(private val context: Context) {
@@ -53,12 +56,17 @@ class Window(private val context: Context) {
     var remote_host="192.168.1.145"
     var remote_port=45032
     var stream_port=8877
-    // JPEG-over-UDP FPV preview (streaming/jpeg_udp_streamer.py on the Arducam side).
-    // Off by default: set useFpvUdpPreview=true to use it instead of SerialH264Player.
-    var useFpvUdpPreview=true
-    var fpvUdpPort=5600
-    var fpvUdpMulticastGroup: String?="239.255.0.2" // e.g. "239.255.0.2" if the sender's broadcast_addr is multicast
+    // FPV preview source: JPEG_SERIAL (jpeg_udp_streamer.py -> SkydroidSerial2Net ESP32
+    // bridge -> UART, same wire the REST bridge/H264 path already use), or
+    // SERIAL_H264 (the original RTP/H264-over-serial path).
+    var fpvPreviewMode = FpvPreviewMode.JPEG_SERIAL
     var onAcquisition=false;
+    // Polling periodico dello stato acquisizione (sostituisce device_status via
+    // Socket.IO, che richiede un vero percorso IP e non funziona sul solo bridge
+    // seriale/radio Skydroid) - vedi startStatusPolling()/stopStatusPolling().
+    private var statusPollingActive = false
+    private val statusPollHandler = Handler(Looper.getMainLooper())
+    private val statusPollIntervalMs = 5000L
     val windowHeight=150
     val windowHeightMax=300
     val windowWidth=270
@@ -94,7 +102,13 @@ class Window(private val context: Context) {
     lateinit var btn_preview_image:Button
     lateinit var btn_collapse:Button
     //lateinit var preview: VLCVideoLayout //:WebView
-    lateinit var preview: SurfaceView //:WebView
+    lateinit var preview: TextureView //:WebView
+    // TextureView (not SurfaceView) because SurfaceView's independently-composited
+    // layer doesn't get parented correctly by SurfaceFlinger inside a
+    // TYPE_APPLICATION_OVERLAY window (confirmed via logcat: "Failed to find layer
+    // (SurfaceView - #0) in layer parent (no-parent)"), leaving the preview blank
+    // even though frames decode and draw without error.
+    private var previewSurface: Surface? = null
 
     lateinit var status:TextView
     lateinit var depth:TextView
@@ -109,7 +123,7 @@ class Window(private val context: Context) {
     private var libVlc: LibVLC? = null
     private var vlcPlayer: MediaPlayer? = null
     private var videoPlayer: SerialH264Player? = null
-    private var udpVideoPlayer: JpegUdpPlayer? = null
+    private var serialJpegVideoPlayer: SerialJpegPlayer? = null
     private val paramValueFormat = DecimalFormat("0.##").apply {
         decimalFormatSymbols = DecimalFormatSymbols.getInstance(Locale.getDefault())
     }
@@ -127,7 +141,11 @@ class Window(private val context: Context) {
         WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS or
                 WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
                 WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
-                WindowManager.LayoutParams.FLAG_WATCH_OUTSIDE_TOUCH,
+                WindowManager.LayoutParams.FLAG_WATCH_OUTSIDE_TOUCH or
+                // Required for the TextureView (preview) to render at all: without it,
+                // this Service-added overlay window is not hardware-accelerated and
+                // TextureView silently draws nothing.
+                WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED,
         PixelFormat.TRANSLUCENT
     )
 
@@ -233,6 +251,7 @@ class Window(private val context: Context) {
         recording= rootView.findViewById(R.id.recording) as ImageView
         btn_start_acquisition=rootView.findViewById(R.id.btn_start_acquisition) as Button
         btn_start_video=rootView.findViewById(R.id.btn_start_video) as Button
+        btn_start_video.visibility = Button.GONE // acquisizione video disabilitata dall'app
         //btn_upload_firmware=rootView.findViewById(R.id.btn_upload_firmware) as Button
 
         btn_preview_image=rootView.findViewById(R.id.btn_preview_image) as Button
@@ -242,21 +261,32 @@ class Window(private val context: Context) {
         btn_collapse=rootView.findViewById(R.id.btn_collapse) as Button
 
         //preview=rootView.findViewById(R.id.preview) as VLCVideoLayout //as WebView
-        preview=rootView.findViewById(R.id.preview) as SurfaceView //as WebView
+        preview=rootView.findViewById(R.id.preview) as TextureView //as WebView
 
-        preview.holder.addCallback(object : SurfaceHolder.Callback {
-            override fun surfaceCreated(holder: SurfaceHolder) {
+        preview.surfaceTextureListener = object : TextureView.SurfaceTextureListener {
+            override fun onSurfaceTextureAvailable(surfaceTexture: SurfaceTexture, width: Int, height: Int) {
+                previewSurface = Surface(surfaceTexture)
                 startPreview()
             }
 
-            override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) {
+            override fun onSurfaceTextureSizeChanged(surfaceTexture: SurfaceTexture, width: Int, height: Int) {
                 // eventuale gestione resize, se serve
             }
 
-            override fun surfaceDestroyed(holder: SurfaceHolder) {
-                // eventuale cleanup, es. stopPreview()
+            override fun onSurfaceTextureDestroyed(surfaceTexture: SurfaceTexture): Boolean {
+                // Without this, the active player keeps holding the now-invalid Surface
+                // (e.g. after a window resize recreates it) and every render attempt
+                // throws "Surface has already been released" instead of showing video.
+                stopPreview()
+                previewSurface?.release()
+                previewSurface = null
+                return true
             }
-        })
+
+            override fun onSurfaceTextureUpdated(surfaceTexture: SurfaceTexture) {
+                // no-op: frames are pushed explicitly via lockCanvas/unlockCanvasAndPost
+            }
+        }
 
 
 
@@ -505,8 +535,38 @@ class Window(private val context: Context) {
             updateConnection(true)
         }
 
-        rootView.findViewById<Button>(R.id.btn_reset_settings).setOnClickListener{
-            resetSettings()
+        val btn_reset_settings = rootView.findViewById<Button>(R.id.btn_reset_settings)
+        btn_reset_settings.setOnClickListener{
+            btn_reset_settings.isEnabled = false
+            resetSettings { btn_reset_settings.isEnabled = true }
+        }
+
+        val btn_autofocus = rootView.findViewById<Button>(R.id.btn_autofocus)
+        btn_autofocus.setOnClickListener{
+            btn_autofocus.isEnabled = false
+            // api.triggerAutofocus() e' sincrona sul bridge seriale/radio (scansione
+            // AF + round trip, puo' impiegare un paio di secondi): fuori dal main
+            // thread per evitare ANR, come le altre chiamate api.*.
+            Thread {
+                val ok = api.triggerAutofocus()
+                // L'autofocus cambia lensposition lato camera senza passare da
+                // setSettings(): senza rileggere le impostazioni il valore mostrato
+                // in pannello resta quello vecchio anche se l'AF e' riuscito.
+                val refreshedSettings = if (ok) {
+                    try { api.getSettings() } catch (e: java.net.ConnectException) { null }
+                } else null
+                Handler(Looper.getMainLooper()).post {
+                    btn_autofocus.isEnabled = true
+                    if (ok) {
+                        if (refreshedSettings != null) {
+                            settings = refreshedSettings
+                            updateValues()
+                        }
+                    } else {
+                        Toast.makeText(App.activity,"Errore durante l'autofocus", Toast.LENGTH_LONG).show()
+                    }
+                }
+            }.start()
         }
 
 
@@ -519,6 +579,12 @@ class Window(private val context: Context) {
         }
 
         btn_collapse.setOnClickListener {
+           collapse()
+        }
+
+        // La chevron e' piccola e a volte manca il tap: anche l'etichetta dei metri
+        // accanto collassa/espande la finestra, cosi' l'area cliccabile e' piu' grande.
+        depth.setOnClickListener {
            collapse()
         }
 
@@ -567,7 +633,13 @@ class Window(private val context: Context) {
     }
 
 
-    fun resetSettings(){
+    // onComplete: usato dal pulsante "Reset" per disabilitarsi durante l'invio e
+    // riabilitarsi solo a richiesta finita (successo o errore) - a differenza dei
+    // controlli +/- (rapidi, incrementali, lasciati senza blocco), Reset cambia 8
+    // valori in un colpo ed e' un'azione singola come avvia/ferma/autofocus, quindi
+    // merita lo stesso trattamento per non restare "impallato" su tap ripetuti.
+    fun resetSettings(onComplete: (() -> Unit)? = null){
+        if (!::settings.isInitialized) { onComplete?.invoke(); return } // primo fetch da updateConnection() non ancora arrivato
         settings.gain=1.0;
         settings.contrast= 1.0;
         settings.brightness= 0.0
@@ -576,21 +648,36 @@ class Window(private val context: Context) {
         settings.exposurevalue=0
         settings.lensposition=0.0
         settings.saturation= 1.0
-        setSettings()
+        setSettings(onComplete)
         updateValues()
 
 
     }
 
-    fun setSettings(){
-        if(api.setSettings(settings)){
-            updateValues()
-        }else{
-            Toast.makeText(App.activity,"Errore durante la modifica delle impostazioni", Toast.LENGTH_LONG).show()
-        }
+    fun setSettings(onComplete: (() -> Unit)? = null){
+        if (!::settings.isInitialized) { onComplete?.invoke(); return } // primo fetch da updateConnection() non ancora arrivato
+        // Feedback immediato: il valore locale e' gia' stato mutato dal chiamante
+        // (es. btn_plus/btn_minus) prima di arrivare qui, quindi si puo' mostrare
+        // subito senza aspettare la conferma di rete (che puo' impiegare diversi
+        // secondi sul bridge seriale/radio) - altrimenti il testo a schermo resta
+        // "congelato" sul vecchio valore per tutta la durata del giro di rete.
+        updateValues()
+        // api.setSettings() e' una chiamata sincrona sul bridge seriale: fuori dal
+        // main thread per evitare ANR (chiamata da moltissimi listener +/-).
+        Thread {
+            if(api.setSettings(settings)){
+                Handler(Looper.getMainLooper()).post { updateValues(); onComplete?.invoke() }
+            }else{
+                Handler(Looper.getMainLooper()).post {
+                    Toast.makeText(App.activity,"Errore durante la modifica delle impostazioni", Toast.LENGTH_LONG).show()
+                    onComplete?.invoke()
+                }
+            }
+        }.start()
     }
 
     fun updateValues(){
+        if (!::settings.isInitialized) return // primo fetch da updateConnection() non ancora arrivato
         brightness_control.findViewById<TextView>(R.id.value).text=paramValueFormat.format(settings.brightness)
         contrast_control.findViewById<TextView>(R.id.value).text=paramValueFormat.format(settings.contrast)
         sharpness_control.findViewById<TextView>(R.id.value).text=paramValueFormat.format(settings.sharpness)
@@ -641,6 +728,7 @@ class Window(private val context: Context) {
 
     fun close() {
         try {
+            stopStatusPolling()
             stopPreview()
             windowManager.removeView(rootView)
         } catch (e: Exception) {
@@ -703,36 +791,67 @@ class Window(private val context: Context) {
 
     @RequiresApi(Build.VERSION_CODES.O)
     fun startAcquisition(video: Boolean=false){
-       if(onAcquisition){
+       // Disabilita subito il pulsante e mostra un testo "in corso" (sync, siamo sul
+       // main thread del click) cosi' tap ripetuti mentre la richiesta e' in volo
+       // (puo' impiegare diversi secondi sul bridge seriale/radio, ora anche in coda
+       // dietro al lock di SerialBridge) non spammano il server, e il pulsante non
+       // sembra bloccato/rotto nell'attesa.
+       btn_start_acquisition.isEnabled = false
+       btn_start_acquisition.text = if (onAcquisition) "Fermando..." else "Iniziando..."
+       // Le chiamate api.* sono sincrone (Retrofit .execute()) e possono impiegare
+       // diversi secondi sul bridge seriale/radio: girate su un thread apposito per
+       // non bloccare il main thread (rischio ANR, vedi timeout SerialBridge).
+       Thread {
+         try {
+           if(onAcquisition){
 
-           if(api.stopDataset()) {
-               setAcquisitionState(false)
-           }else{
-               setAcquisitionState(false)
-
-               Toast.makeText(App.activity,"Errore durante l'arresto dell'acquisizione", Toast.LENGTH_LONG).show()
-           }
-       }else{
-           val d: dataset = dataset()
-           val sdf = SimpleDateFormat("yyyy-MM-dd", Locale.ITALY)
-           d.datasetname = sdf.format(Date())
-
-           if(!video){
-               d.interval = if (interval > 0.0) interval else null; //Set interval
-               if(api.startDataset(d)>-1) {
-                   setAcquisitionState(true)
+               if(api.stopDataset()) {
+                   setAcquisitionState(false)
                }else{
-                   Toast.makeText(App.activity,"Errore durante l'avvio dell'acquisizione", Toast.LENGTH_LONG).show()
+                   // Fallito per davvero (isAcquisitionRunning() conferma ancora attiva,
+                   // vedi Webserver.stopDataset()): resta nello stato "in corso", non "false".
+                   setAcquisitionState(true)
+
+                   Handler(Looper.getMainLooper()).post {
+                       Toast.makeText(App.activity,"Errore durante l'arresto dell'acquisizione", Toast.LENGTH_LONG).show()
+                   }
                }
            }else{
-               if(api.startVideo(d)>-1) {
-                   setAcquisitionState(true)
-               }else{
-                   Toast.makeText(App.activity,"Errore durante l'avvio dell'acquisizione", Toast.LENGTH_LONG).show()
-               }
-           }
+               val d: dataset = dataset()
+               val sdf = SimpleDateFormat("yyyy-MM-dd", Locale.ITALY)
+               d.datasetname = sdf.format(Date())
 
-       }
+               if(!video){
+                   d.interval = if (interval > 0.0) interval else null; //Set interval
+                   val result = api.startDataset(d)
+                   if(result>-1 || result==Webserver.ALREADY_RUNNING) {
+                       // ALREADY_RUNNING: il server ha gia' un'acquisizione aperta (es.
+                       // risposta al primo tap persa sul bridge radio) - risincronizza lo
+                       // stato locale invece di segnalare un errore che non e' reale.
+                       setAcquisitionState(true)
+                   }else{
+                       setAcquisitionState(false)
+                       Handler(Looper.getMainLooper()).post {
+                           Toast.makeText(App.activity,"Errore durante l'avvio dell'acquisizione", Toast.LENGTH_LONG).show()
+                       }
+                   }
+               }else{
+                   val result = api.startVideo(d)
+                   if(result>-1 || result==Webserver.ALREADY_RUNNING) {
+                       setAcquisitionState(true)
+                   }else{
+                       setAcquisitionState(false)
+                       Handler(Looper.getMainLooper()).post {
+                           Toast.makeText(App.activity,"Errore durante l'avvio dell'acquisizione", Toast.LENGTH_LONG).show()
+                       }
+                   }
+               }
+
+           }
+         } finally {
+             Handler(Looper.getMainLooper()).post { btn_start_acquisition.isEnabled = true }
+         }
+       }.start()
     }
 
     fun setAcquisitionState(state:Boolean){
@@ -746,10 +865,51 @@ class Window(private val context: Context) {
                 status.text = "Ready"
                 recording.visibility=ImageView.GONE
                 btn_start_acquisition.text = "Avvia Scatto Foto"
-                btn_start_video.visibility= ImageView.VISIBLE
+                // btn_start_video resta nascosto (acquisizione video disabilitata, vedi initWindow)
                 onAcquisition = false
             }
         }
+    }
+
+    // Ogni statusPollIntervalMs interroga GET /datasets/ e GET /location_system/status
+    // (via SerialBridge, che ora serializza le richieste con un lock) per sapere se
+    // un'acquisizione e' in corso con quanti scatti, e la profondita' attuale -
+    // sostituisce device_status/datasets_storage_status/location_status via Socket.IO,
+    // che sul solo bridge seriale/radio Skydroid non e' raggiungibile (serve un vero
+    // percorso IP).
+    private val statusPollRunnable = object : Runnable {
+        override fun run() {
+            if (!statusPollingActive) return
+            Thread {
+                val acqStatus = api.getAcquisitionStatus()
+                val depthMeters = api.getDepthMeters()
+                Handler(Looper.getMainLooper()).post {
+                    if (acqStatus != null) {
+                        setAcquisitionState(acqStatus.running)
+                        if (acqStatus.running) {
+                            status.text = "Dataset ${acqStatus.datasetId} Foto ${acqStatus.items}"
+                        }
+                    }
+                    if (depthMeters != null) {
+                        depth.text = "%.2f mt".format(depthMeters)
+                    }
+                    if (statusPollingActive) {
+                        statusPollHandler.postDelayed(this, statusPollIntervalMs)
+                    }
+                }
+            }.start()
+        }
+    }
+
+    fun startStatusPolling() {
+        if (statusPollingActive) return
+        statusPollingActive = true
+        statusPollHandler.postDelayed(statusPollRunnable, statusPollIntervalMs)
+    }
+
+    fun stopStatusPolling() {
+        statusPollingActive = false
+        statusPollHandler.removeCallbacks(statusPollRunnable)
     }
 
     fun updateConnection(answerAddress: Boolean=false){
@@ -757,139 +917,173 @@ class Window(private val context: Context) {
         api= Webserver();
         api.init("http://"+remote_host+":"+remote_port, serialPort)
 
-        var ucamera_version=""
-        try{
-            ucamera_version=api.getVersion().version
-        }catch(e:java.net.ConnectException){
-            Log.e("UCamera",e.message.toString())
-            if(answerAddress) {
-                Handler().post (Runnable{
-                    // Set up the input
-                    val input: EditText = EditText(App.activity);
-    // Specify the type of input expected; this, for example, sets the input as a password, and will mask the text
-                    input.setInputType(InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_URI)
+        // getVersion()/getSettings() sono chiamate sincrone sul bridge seriale/radio
+        // (fino a 20s di timeout, vedi SerialBridge): fuori dal main thread per
+        // evitare ANR - questa funzione viene chiamata direttamente da initWindow()
+        // e da click listener. Il resto (view, dialog, socket.io) torna sul main
+        // thread via Handler.post, invariato rispetto a prima.
+        Thread {
+            var ucamera_version=""
+            try{
+                ucamera_version=api.getVersion().version
+            }catch(e:java.net.ConnectException){
+                Log.e("UCamera",e.message.toString())
+                Handler(Looper.getMainLooper()).post {
+                    if(answerAddress) {
+                        // Set up the input
+                        val input: EditText = EditText(App.activity);
+        // Specify the type of input expected; this, for example, sets the input as a password, and will mask the text
+                        input.setInputType(InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_URI)
 
-                    //richiedi di inserire un nuovo indirizzo IP
-                    val builder = AlertDialog.Builder(App.activity)
-                    builder.setTitle("UCamera non trovata")
-                    builder.setMessage("Dispositivo non trovato. Indicare un nuovo indirizzo IP su cui cercare la camera")
-                    builder.setView(input)
-                    builder.setPositiveButton(android.R.string.yes) { dialog, which ->
-                        remote_host=input.text.toString()
-                        //webserver_url = "http://" + input.text.toString() + ":45032"
-                        saveAppConfig()
-                        updateConnection(true)
+                        //richiedi di inserire un nuovo indirizzo IP
+                        val builder = AlertDialog.Builder(App.activity)
+                        builder.setTitle("UCamera non trovata")
+                        builder.setMessage("Dispositivo non trovato. Indicare un nuovo indirizzo IP su cui cercare la camera")
+                        builder.setView(input)
+                        builder.setPositiveButton(android.R.string.yes) { dialog, which ->
+                            remote_host=input.text.toString()
+                            //webserver_url = "http://" + input.text.toString() + ":45032"
+                            saveAppConfig()
+                            updateConnection(true)
+                        }
+
+                        builder.setNegativeButton(android.R.string.no) { dialog, which ->
+                            Toast.makeText(
+                                context,
+                                android.R.string.no, Toast.LENGTH_SHORT
+                            ).show()
+                        }
+
+
+                        builder.show()
                     }
 
-                    builder.setNegativeButton(android.R.string.no) { dialog, which ->
-                        Toast.makeText(
-                            context,
-                            android.R.string.no, Toast.LENGTH_SHORT
-                        ).show()
-                    }
-
-
-                    builder.show()
-                } )
-
+                    onCameraState(false)
+                }
+                return@Thread
             }
 
-            onCameraState(false)
-            return;
+            /*
+            //verifica se bisogna aggiornare il server
+            if(ucamera_version!="1.1.9"){
+                //effettua l'aggiornamento
+               // uploadFirmware()
+                return;
+            }*/
 
-        }
-
-        /*
-        //verifica se bisogna aggiornare il server
-        if(ucamera_version!="1.1.9"){
-            //effettua l'aggiornamento
-           // uploadFirmware()
-            return;
-        }*/
-
-
-        settings= api.getSettings()
-
-        updateValues()
-        if (answerAddress)
-            stopPreview()
-
-        if (!::s.isInitialized) {
-            s=SocketIOConnection()
-            s.init("http://"+remote_host+":"+remote_port+"/")
-            onCameraState(false)
-
-            s.socket.on(Socket.EVENT_CONNECT,Emitter.Listener {
-                onCameraState(true)
-            })
-
-            s.socket.on(Socket.EVENT_DISCONNECT,Emitter.Listener {
-                onCameraState(false)
-                Thread.sleep(2000)
-                s.init("http://"+remote_host+":"+remote_port+"/");
-            })
-
-
-            s.socket.on("device_status", Emitter.Listener { it->
-                it.forEach {
-                        row->
-                    var device=row as JSONObject
-                    if(device.get("name")=="arducam"){
-                        var isRecording = device.getBoolean("is_recording")
-                        setAcquisitionState(isRecording)
-                    }
+            // getSettings() lancia deliberatamente ConnectException se la richiesta va in
+            // timeout/errore (vedi Webserver.getSettings()) - senza catch qui l'eccezione
+            // risale non gestita e crasha l'app (bug preesistente, non solo un problema di
+            // ANR): stesso trattamento del fallimento di getVersion() sopra.
+            val fetchedSettings: settings
+            try {
+                fetchedSettings = api.getSettings()
+            } catch (e: java.net.ConnectException) {
+                Log.e("UCamera","updateConnection/getSettings: "+e.message.toString())
+                Handler(Looper.getMainLooper()).post {
+                    onCameraState(false)
                 }
+                return@Thread
+            }
+            // Risincronizza onAcquisition con lo stato reale del server: se un'acquisizione
+            // era gia' partita altrove (app riavviata, tap precedente la cui risposta si e'
+            // persa, ecc.) il pulsante deve mostrare subito "Ferma" invece di lasciare
+            // capire solo al prossimo tentativo di avvio fallito.
+            val acqStatus = api.getAcquisitionStatus()
 
-            })
+            Handler(Looper.getMainLooper()).post {
+                settings = fetchedSettings
+                setAcquisitionState(acqStatus?.running ?: false)
+                if (acqStatus?.running == true) {
+                    status.text = "Dataset ${acqStatus.datasetId} Foto ${acqStatus.items}"
+                }
+                startStatusPolling()
 
-            s.socket.on("datasets_storage_status", Emitter.Listener { it->
-                it.forEach {
-                        row->
-                    var dataset=row as JSONObject
-                    var acquisition = dataset.getJSONObject("current_camera_acquisition")
-                    if (acquisition.length() != 0) {
-                        //setAcquisitionState(true)
-                        Handler(Looper.getMainLooper()).post {
-                            status.text = "Dataset " + acquisition.get("dataset_id").toString() +
-                                    " Foto " + acquisition.get("items").toString()
+                updateValues()
+                if (answerAddress)
+                    stopPreview()
+
+                if (!::s.isInitialized) {
+                    s=SocketIOConnection()
+                    s.init("http://"+remote_host+":"+remote_port+"/")
+                    onCameraState(false)
+
+                    s.socket.on(Socket.EVENT_CONNECT,Emitter.Listener {
+                        onCameraState(true)
+                    })
+
+                    s.socket.on(Socket.EVENT_DISCONNECT,Emitter.Listener {
+                        onCameraState(false)
+                        Thread.sleep(2000)
+                        s.init("http://"+remote_host+":"+remote_port+"/");
+                    })
+
+
+                    s.socket.on("device_status", Emitter.Listener { it->
+                        it.forEach {
+                                row->
+                            var device=row as JSONObject
+                            if(device.get("name")=="arducam"){
+                                var isRecording = device.getBoolean("is_recording")
+                                setAcquisitionState(isRecording)
+                            }
                         }
-                    } else {
-                        //setAcquisitionState(false)
-                    }
-                }
 
-            });
+                    })
 
-            s.socket.on("location_status", Emitter.Listener{ it ->
-                it.forEach {
-                    row->
-                    var location = row as JSONObject
-                    var altitude = location.optJSONArray("altitude")
-                    if (altitude != null && altitude.length() >= 2 && altitude.getString(1) == "BSL") {
-                        val altitudeValue = altitude.getDouble(0)
-                        Handler(Looper.getMainLooper()).post {
-                            depth.text = "%.2f mt".format(altitudeValue)
+                    s.socket.on("datasets_storage_status", Emitter.Listener { it->
+                        it.forEach {
+                                row->
+                            var dataset=row as JSONObject
+                            var acquisition = dataset.getJSONObject("current_camera_acquisition")
+                            if (acquisition.length() != 0) {
+                                //setAcquisitionState(true)
+                                Handler(Looper.getMainLooper()).post {
+                                    status.text = "Dataset " + acquisition.get("dataset_id").toString() +
+                                            " Foto " + acquisition.get("items").toString()
+                                }
+                            } else {
+                                //setAcquisitionState(false)
+                            }
                         }
-                    }
+
+                    });
+
+                    s.socket.on("location_status", Emitter.Listener{ it ->
+                        it.forEach {
+                            row->
+                            var location = row as JSONObject
+                            var altitude = location.optJSONArray("altitude")
+                            if (altitude != null && altitude.length() >= 2 && altitude.getString(1) == "BSL") {
+                                val altitudeValue = altitude.getDouble(0)
+                                Handler(Looper.getMainLooper()).post {
+                                    depth.text = "%.2f mt".format(altitudeValue)
+                                }
+                            }
 
 
+                        }
+
+                    })
                 }
-
-            })
-        }
-        if (!s.isConnected()) {
-            s.socket.connect()
-        }
-        //startPreview()
-
+                if (!s.isConnected()) {
+                    s.socket.connect()
+                }
+                //startPreview()
+            }
+        }.start()
     }
     fun startPreview(){
-        if (useFpvUdpPreview) {
-            udpVideoPlayer = JpegUdpPlayer(fpvUdpPort, preview.holder.surface, fpvUdpMulticastGroup, context)
-            udpVideoPlayer?.start()
-        } else {
-            videoPlayer = SerialH264Player( serialPort, preview.holder.surface)
-            videoPlayer?.start()
+        val surface = previewSurface ?: return
+        when (fpvPreviewMode) {
+            FpvPreviewMode.JPEG_SERIAL -> {
+                serialJpegVideoPlayer = SerialJpegPlayer(serialPort, surface)
+                serialJpegVideoPlayer?.start()
+            }
+            FpvPreviewMode.SERIAL_H264 -> {
+                videoPlayer = SerialH264Player( serialPort, surface)
+                videoPlayer?.start()
+            }
         }
     }
     /*
@@ -924,12 +1118,13 @@ class Window(private val context: Context) {
     */
     fun stopPreview(){
         videoPlayer?.stop()
-        udpVideoPlayer?.stop()
+        serialJpegVideoPlayer?.stop()
     }
 
     @SuppressLint("ResourceAsColor")
     fun onCameraState(connected:Boolean){
         camera_connected=connected;
+        /*
         Handler(Looper.getMainLooper()).post {
             if (connected) {
                 main_panel.setBackgroundColor(R.color.white)
@@ -945,7 +1140,7 @@ class Window(private val context: Context) {
                 preview.visibility = VLCVideoLayout.INVISIBLE
 
             }
-        }
+        }*/
 
     }
 

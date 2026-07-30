@@ -29,7 +29,7 @@ class SerialFrameReader(private val onFrame: (sync0: Byte, sync1: Byte, payload:
     private var len = 0
     private var idx = 0
     private var checksum: Byte = 0
-    private var buffer = ByteArray(4096)
+    private var buffer = ByteArray(65535) // max rappresentabile dal campo lunghezza a 2 byte di SerialFrame.encode()
 
     fun feed(data: ByteArray, count: Int) {
         for (i in 0 until count) {

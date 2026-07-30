@@ -21,7 +21,12 @@ class SerialFrameDeframer(
 ) {
     private val SYNC_0: Byte = 0xAA.toByte()
     private val SYNC_1: Byte = 0x55.toByte()
-    private val MAX_PAYLOAD = 1500
+    // 40000: l'ESP32 (SkydroidSerial2Net/main.cpp) ora ricompone i chunk FPV in
+    // RAM e inoltra ogni frame video come un solo pacchetto seriale (invece di
+    // uno per chunk), fino a FPV_MAX_CHUNKS * FPV_MAX_CHUNK_LEN (~35.8KB) - va
+    // tenuto sopra quel massimo, non piu' limitato alla dimensione di un
+    // singolo chunk UDP.
+    private val MAX_PAYLOAD = 40000
 
     // Buffer di accumulo per i byte che arrivano frammentati tra chiamate feed()
     private var buffer = ByteArray(0)
