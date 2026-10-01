@@ -35,17 +35,20 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
-import org.videolan.libvlc.LibVLC
-import org.videolan.libvlc.MediaPlayer
-import org.videolan.libvlc.util.VLCVideoLayout
 import java.text.DecimalFormat
 import java.text.DecimalFormatSymbols
 import android.view.Surface
 import android.graphics.SurfaceTexture
 import android.view.TextureView
 import com.trediresearch.ucamera.video.SerialPortConnection
+import com.trediresearch.ucamera.webserver.CaptureResult
+import com.trediresearch.ucamera.webserver.FOCUS_MANUAL
+import com.trediresearch.ucamera.webserver.FOCUS_MODES
+import com.trediresearch.ucamera.webserver.FOCUS_SINGLE
 import com.trediresearch.ucamera.webserver.Webserver
 import com.trediresearch.ucamera.webserver.dataset
+import com.trediresearch.ucamera.webserver.focusModeDescription
+import com.trediresearch.ucamera.webserver.focusModeLabel
 import com.trediresearch.ucamera.webserver.settings
 
 enum class FpvPreviewMode { SERIAL_H264, JPEG_SERIAL }
@@ -65,15 +68,39 @@ class Window(private val context: Context) {
     // Socket.IO, che richiede un vero percorso IP e non funziona sul solo bridge
     // seriale/radio Skydroid) - vedi startStatusPolling()/stopStatusPolling().
     private var statusPollingActive = false
+    // Vero mentre uno scatto di prova e' in volo. Il polling salta il suo giro: sono due
+    // round trip da fino a 6s ciascuno che terrebbero il lock di SerialBridge, mettendo
+    // in coda la richiesta piu' fragile che abbiamo proprio quando conta.
+    @Volatile
+    private var captureInFlight = false
     private val statusPollHandler = Handler(Looper.getMainLooper())
     private val statusPollIntervalMs = 5000L
     val windowHeight=150
     val windowHeightMax=300
     val windowWidth=270
+    // Larghezza della preview nella finestra compatta (come da layout). A tutto schermo
+    // viene ricalcolata in base allo spazio disponibile, vedi applyPreviewSize().
+    private val previewWidthCompact=150
+    // Modalita' a tutto schermo: la finestra occupa tutto il display invece dei dp fissi
+    // sopra, cosi' la preview e' grande abbastanza da valutare inquadratura e fuoco.
+    private var isFullscreen=false
+    // Posizione della finestra compatta prima di andare a tutto schermo: va ripristinata
+    // all'uscita, altrimenti si torna alla posizione di default e non dove l'utente
+    // aveva trascinato la finestra.
+    private var compactX: Int? = null
+    private var compactY: Int? = null
     var interval=5.0
     var camera_connected=false;
 
-    lateinit var settings: settings
+    // NON lateinit: i listener +/- sono registrati da initWindow() PRIMA che
+    // updateConnection() abbia letto le impostazioni, e quel thread ha due uscite
+    // anticipate (getVersion()/getSettings() falliti con camera spenta o radio non
+    // agganciata). Con lateinit bastava aprire "Parametri" e premere un + per avere
+    // UninitializedPropertyAccessException. Ora l'oggetto esiste sempre e
+    // settingsLoaded dice se contiene dati veri: finche' e' false i controlli
+    // restano disabilitati, invece di mostrare valori inventati come fossero reali.
+    var settings: settings = settings()
+    private var settingsLoaded = false
     lateinit var api: Webserver
     lateinit var s: SocketIOConnection
 
@@ -101,6 +128,11 @@ class Window(private val context: Context) {
 
     lateinit var btn_preview_image:Button
     lateinit var btn_collapse:Button
+    lateinit var btn_fullscreen:Button
+    lateinit var btn_autofocus:Button
+    lateinit var btn_ae:Button
+    lateinit var btn_reset_settings:Button
+    lateinit var preview_container:View
     //lateinit var preview: VLCVideoLayout //:WebView
     lateinit var preview: TextureView //:WebView
     // TextureView (not SurfaceView) because SurfaceView's independently-composited
@@ -117,11 +149,14 @@ class Window(private val context: Context) {
     lateinit var btn_open_acquisition:Button
     lateinit var btn_open_config:Button
     //lateinit var btn_upload_firmware:Button
+    // Tempi di esposizione selezionabili, in MICROsecondi, dal piu' lungo al piu' corto.
+    // Le due liste vanno tenute della stessa lunghezza: EXPOSURE_TIME_LABEL[i] descrive
+    // EXPOSURE_TIME[i]. Il primo valore non e' 500000 come suggerirebbe l'etichetta
+    // "1/2": 453000 e' il massimo che il sensore accetta nella modalita' di preview, e
+    // alzarlo a 500000 lo farebbe rifiutare da set_controls lato plugin.
     val EXPOSURE_TIME_LABEL= arrayListOf<String>("1/2","1/4","1/8","1/15","1/30","1/60","1/125","1/250","1/500","1/1000","1/2000")
     val EXPOSURE_TIME= arrayListOf<Int>(453000,250000,125000,66666,33333,16666,8000,4000,2000,1000,500)
 
-    private var libVlc: LibVLC? = null
-    private var vlcPlayer: MediaPlayer? = null
     private var videoPlayer: SerialH264Player? = null
     private var serialJpegVideoPlayer: SerialJpegPlayer? = null
     private val paramValueFormat = DecimalFormat("0.##").apply {
@@ -150,6 +185,9 @@ class Window(private val context: Context) {
     )
 
 
+    private val MATCH = android.view.ViewGroup.LayoutParams.MATCH_PARENT
+    private val WRAP = android.view.ViewGroup.LayoutParams.WRAP_CONTENT
+
     private var serialPort: SerialPortConnection? = null
 
     private fun getCurrentDisplayMetrics(): DisplayMetrics {
@@ -166,16 +204,26 @@ class Window(private val context: Context) {
     ) {
 
         val dm = getCurrentDisplayMetrics()
+
+        if (isFullscreen) {
+            // Tutto schermo: niente dp fissi, niente offset. FLAG_LAYOUT_NO_LIMITS e'
+            // gia' attivo sui windowParams, quindi MATCH_PARENT copre l'intero display.
+            params.gravity = Gravity.TOP or Gravity.START
+            params.width = WindowManager.LayoutParams.MATCH_PARENT
+            params.height = WindowManager.LayoutParams.MATCH_PARENT
+            params.x = 0
+            params.y = 0
+            return
+        }
+
         // We have to set gravity for which the calculated position is relative.
         params.gravity = Gravity.TOP or Gravity.RIGHT
         params.width = (widthInDp * dm.density).toInt()
         params.height = (heightInDp * dm.density).toInt()
-        params.y = 130
-        params.x = 30
-
-
-
-
+        // x/y sono pixel, non dp: senza conversione la posizione cambia con la densita'
+        // dello schermo, mentre larghezza e altezza sopra sono gia' convertite.
+        params.y = compactY ?: (65 * dm.density).toInt()
+        params.x = compactX ?: (15 * dm.density).toInt()
 
 
     }
@@ -223,8 +271,13 @@ class Window(private val context: Context) {
 
                     MotionEvent.ACTION_MOVE -> {
                         Log.d("AD", "Action Move")
+                        // A tutto schermo trascinare non ha senso e porterebbe la finestra
+                        // fuori dal display: il gesto resta catturato ma non muove nulla.
+                        if (isFullscreen) return true
                         windowParams.x = initialX - (event.rawX - initialTouchX).toInt()
                         windowParams.y = initialY + (event.rawY - initialTouchY).toInt()
+                        compactX = windowParams.x
+                        compactY = windowParams.y
                         windowManager.updateViewLayout(rootView, windowParams)
                         return true
                     }
@@ -259,6 +312,11 @@ class Window(private val context: Context) {
         btn_open_acquisition=rootView.findViewById(R.id.btn_open_acquisition) as Button
         btn_open_config=rootView.findViewById(R.id.btn_open_config) as Button
         btn_collapse=rootView.findViewById(R.id.btn_collapse) as Button
+        btn_fullscreen=rootView.findViewById(R.id.btn_fullscreen) as Button
+        btn_autofocus=rootView.findViewById(R.id.btn_autofocus) as Button
+        btn_ae=rootView.findViewById(R.id.btn_ae) as Button
+        btn_reset_settings=rootView.findViewById(R.id.btn_reset_settings) as Button
+        preview_container=rootView.findViewById(R.id.preview_container) as View
 
         //preview=rootView.findViewById(R.id.preview) as VLCVideoLayout //as WebView
         preview=rootView.findViewById(R.id.preview) as TextureView //as WebView
@@ -291,6 +349,11 @@ class Window(private val context: Context) {
 
 
 
+        // Versione presa dal pacchetto invece che scritta nel layout: il literal era
+        // rimasto a "1.1" mentre versionName era gia' 1.2, cioe' la barra mostrava una
+        // versione che non esisteva.
+        rootView.findViewById<TextView>(R.id.title).text = "3DR UCamera " + appVersionName()
+
         //rectimage=rootView.findViewById(R.id.rect) as ImageView
         status=rootView.findViewById(R.id.status) as TextView
         depth=rootView.findViewById(R.id.depth) as TextView
@@ -298,9 +361,9 @@ class Window(private val context: Context) {
         contrast_control.findViewById<TextView>(R.id.label).text="Contrasto"
         sharpness_control.findViewById<TextView>(R.id.label).text="Nitidezza"
         saturation_control.findViewById<TextView>(R.id.label).text="Saturazione"
-        exposure_control.findViewById<TextView>(R.id.label).text="Esposizione"
-        exposuretime_control.findViewById<TextView>(R.id.label).text="Tempo di esposizione (ms)"
-        lensposition_control.findViewById<TextView>(R.id.label).text="Fuoco"
+        exposuretime_control.findViewById<TextView>(R.id.label).text="Tempo di esposizione"
+        // "Esposizione" e "Fuoco" hanno l'etichetta dinamica: ci finisce anche la
+        // modalita' corrente, vedi updateControlsEnabled().
         interval_control.findViewById<TextView>(R.id.label).text="Intervallo scatto (s)"
         gain_control.findViewById<TextView>(R.id.label).text="ISO"
 
@@ -315,141 +378,52 @@ class Window(private val context: Context) {
         StrictMode.setThreadPolicy(policy)
 
 
-        brightness_control.findViewById<Button>(R.id.btn_plus).setOnClickListener {
-            if(settings.brightness < 1) {
-                settings.brightness = settings.brightness+0.1;
-                setSettings()
-            }
-        }
+        // I controlli +/- condividono tutti la stessa forma: leggi, applica un passo,
+        // clampa, invia. Prima erano otto coppie copiate a mano, ognuna con la propria
+        // guardia scritta a parte - ed e' esattamente li' che si annidavano l'off-by-one
+        // del tempo di esposizione e il limite inferiore sbagliato del guadagno.
+        bindDoubleParam(brightness_control, -1.0, 1.0, 0.1, { settings.brightness }) { settings.brightness = it }
+        bindDoubleParam(contrast_control, 0.0, 32.0, 1.0, { settings.contrast }) { settings.contrast = it }
+        bindDoubleParam(sharpness_control, 0.0, 16.0, 1.0, { settings.sharpness }) { settings.sharpness = it }
+        bindDoubleParam(saturation_control, 0.0, 32.0, 1.0, { settings.saturation }) { settings.saturation = it }
+        bindDoubleParam(lensposition_control, 0.0, 32.0, 1.0, { settings.lensposition }) { settings.lensposition = it }
 
-        brightness_control.findViewById<Button>(R.id.btn_minus).setOnClickListener {
-            if(settings.brightness > -1) {
-                settings.brightness =settings.brightness -0.1;
-                setSettings()
-            }
-        }
-
-
-        contrast_control.findViewById<Button>(R.id.btn_plus).setOnClickListener {
-            if(settings.contrast < 32) {
-                settings.contrast = settings.contrast+1;
-                setSettings()
-
-            }
-        }
-
-        contrast_control.findViewById<Button>(R.id.btn_minus).setOnClickListener {
-            if(settings.contrast > 0) {
-                settings.contrast =settings.contrast -1;
-                setSettings()
-
-            }
-        }
-
-
-        sharpness_control.findViewById<Button>(R.id.btn_plus).setOnClickListener {
-            if(settings.sharpness < 16) {
-                settings.sharpness = settings.sharpness+1;
-                setSettings()
-
-            }
-        }
-
-        sharpness_control.findViewById<Button>(R.id.btn_minus).setOnClickListener {
-            if(settings.sharpness > 0) {
-                settings.sharpness =settings.sharpness -1;
-                setSettings()
-
-            }
-        }
-
-        saturation_control.findViewById<Button>(R.id.btn_plus).setOnClickListener {
-            if(settings.saturation < 32) {
-                settings.saturation = settings.saturation+1;
-                setSettings()
-
-            }
-        }
-
-        saturation_control.findViewById<Button>(R.id.btn_minus).setOnClickListener {
-            if(settings.saturation > 0) {
-                settings.saturation =settings.saturation -1;
-                setSettings()
-
-            }
-        }
+        // Guadagno analogico, mostrato come "ISO" (gain x 100). Il minimo e' 1.0, non 0:
+        // AnalogueGain = 0 non e' valido, e il plugin scrive il valore nel proprio
+        // dizionario PRIMA di passarlo a libcamera - se set_controls solleva, lo stato
+        // resta corrotto e OGNI PUT successivo fallisce finche' non si chiama
+        // /camera/settings/reset. Un solo tap di troppo bloccava tutte le impostazioni.
+        // Il massimo resta 9.0: il limite reale del sensore non e' esposto dall'API
+        // (il server lo legge in camera_controls ma si limita a loggarlo), quindi non
+        // vale la pena spingersi oltre un valore gia' noto come buono.
+        bindDoubleParam(gain_control, 1.0, 9.0, 1.0, { settings.gain }) { settings.gain = it }
 
         exposure_control.findViewById<Button>(R.id.btn_plus).setOnClickListener {
-            if(settings.exposurevalue < 8) {
-                settings.exposurevalue = settings.exposurevalue+1;
+            if (!canEditSettings()) return@setOnClickListener
+            if (settings.exposurevalue < 8) {
+                settings.exposurevalue = settings.exposurevalue + 1
                 setSettings()
-
             }
         }
 
         exposure_control.findViewById<Button>(R.id.btn_minus).setOnClickListener {
-            if(settings.exposurevalue > -8) {
-                settings.exposurevalue =settings.exposurevalue -1;
+            if (!canEditSettings()) return@setOnClickListener
+            if (settings.exposurevalue > -8) {
+                settings.exposurevalue = settings.exposurevalue - 1
                 setSettings()
-
             }
         }
 
         exposuretime_control.findViewById<Button>(R.id.btn_plus).setOnClickListener {
-                var id=0
-                var value=EXPOSURE_TIME[id]
-
-                for(v in EXPOSURE_TIME){
-                        if(v==settings.exposureTime){
-                            if(id<EXPOSURE_TIME.size)
-                                value=EXPOSURE_TIME[id+1]
-                            break
-                        }
-                        id++
-                }
-
-                settings.exposureTime=value
-                setSettings()
-
-
+            stepExposureTime(+1)
         }
 
         exposuretime_control.findViewById<Button>(R.id.btn_minus).setOnClickListener {
-            var id=0
-            var value=EXPOSURE_TIME[id]
-
-            for(v in EXPOSURE_TIME){
-                if(v==settings.exposureTime){
-                    if(id>0)
-                        value=EXPOSURE_TIME[id-1]
-                    break
-                }
-                id++
-            }
-            settings.exposureTime=value
-            setSettings()
-
-
+            stepExposureTime(-1)
         }
 
-
-        lensposition_control.findViewById<Button>(R.id.btn_plus).setOnClickListener {
-            if(settings.lensposition < 32) {
-                settings.lensposition = settings.lensposition+1;
-                setSettings()
-
-            }
-        }
-
-        lensposition_control.findViewById<Button>(R.id.btn_minus).setOnClickListener {
-            if(settings.lensposition > 0) {
-                settings.lensposition =settings.lensposition -1;
-                setSettings()
-
-            }
-        }
-
-
+        // L'intervallo e' locale all'app (va in dataset.interval all'avvio), non e' una
+        // impostazione della camera: non dipende da settingsLoaded ne' passa da setSettings.
         interval_control.findViewById<Button>(R.id.btn_plus).setOnClickListener {
             if(interval < 20.0) {
                 interval=interval+0.5
@@ -464,60 +438,54 @@ class Window(private val context: Context) {
             }
         }
 
-        gain_control.findViewById<Button>(R.id.btn_plus).setOnClickListener {
-            if(settings.gain<9) {
-                settings.gain=settings.gain+1
-                setSettings()
-            }
-        }
-
-        gain_control.findViewById<Button>(R.id.btn_minus).setOnClickListener {
-        if(settings.gain>0){
-            settings.gain =settings.gain -1;
-            setSettings()
-            }
-        }
-
-
 
         btn_preview_image.setOnClickListener{
-            Handler(Looper.getMainLooper()).post {
-                btn_preview_image.isEnabled=false
-                Toast.makeText(App.activity,"Cattura dello scatto di prova in corso...", Toast.LENGTH_SHORT).show()
-
-
-            }
-
-
-
+            // Gia' sul main thread: disabilitare dentro un post() faceva partire il
+            // Thread di rete PRIMA della disabilitazione, lasciando aperta la finestra
+            // per un secondo tap.
+            btn_preview_image.isEnabled=false
+            captureInFlight = true
+            Toast.makeText(App.activity,"Cattura dello scatto di prova in corso...", Toast.LENGTH_SHORT).show()
 
             Thread {
-                val image = api.capture()
-                if (image != null) {
-                    val imageViewer: ImageViewer = ImageViewer(context, image)
-                    imageViewer.open()
-                } else {
+                var result: CaptureResult? = null
+                try {
+                    result = api.capture()
+                } finally {
+                    captureInFlight = false
+                    // try/finally: prima il riabilitare era l'ultima istruzione del thread,
+                    // quindi qualunque eccezione (p.es. ImageViewer costruito fuori dal main
+                    // thread) lasciava il pulsante disabilitato PER SEMPRE - da li' in poi
+                    // ogni tap era un no-op silenzioso, senza toast ne' errore.
+                    val r = result
                     Handler(Looper.getMainLooper()).post {
-                        Toast.makeText(
-                            App.activity,
-                            "Errore durante lo scatto di prova",
-                            Toast.LENGTH_LONG
-                        ).show()
+                        // updateControlsEnabled() e non "isEnabled = true": nel frattempo
+                        // puo' essere partita un'acquisizione, e lo scatto di prova non
+                        // sarebbe piu' lecito (il server lo rifiuterebbe).
+                        updateControlsEnabled()
+                        val bmp = r?.bitmap
+                        if (bmp != null) {
+                            // ImageViewer inflatta un layout e fa windowManager.addView():
+                            // nessuna delle due e' thread-safe, vanno fatte qui sul main thread.
+                            try {
+                                ImageViewer(context, bmp).open()
+                            } catch (e: Exception) {
+                                Log.e("UCamera", "ImageViewer: " + e.message, e)
+                                Toast.makeText(App.activity,
+                                    "Immagine acquisita ma non visualizzabile", Toast.LENGTH_LONG).show()
+                            }
+                        } else {
+                            // Messaggio specifico (incluso quello del server) invece del
+                            // generico "Errore durante lo scatto di prova": distingue
+                            // rifiuto della camera, bridge muto, risposta troncata e timeout.
+                            Toast.makeText(App.activity,
+                                r?.userMessage() ?: "Errore durante lo scatto di prova",
+                                Toast.LENGTH_LONG).show()
+                        }
                     }
                 }
-                Handler(Looper.getMainLooper()).post {
-                    btn_preview_image.isEnabled = true
-                }
-
             }.start()
-
-
         }
-
-        /*
-        btn_upload_firmware.setOnClickListener{
-         uploadFirmware() //TODO: Lasciamo anche questa possibilità?
-        }*/
 
         btn_open_config.setOnClickListener{
             openConfig()
@@ -535,40 +503,32 @@ class Window(private val context: Context) {
             updateConnection(true)
         }
 
-        val btn_reset_settings = rootView.findViewById<Button>(R.id.btn_reset_settings)
         btn_reset_settings.setOnClickListener{
             btn_reset_settings.isEnabled = false
-            resetSettings { btn_reset_settings.isEnabled = true }
+            resetSettings { updateControlsEnabled() }
         }
 
-        val btn_autofocus = rootView.findViewById<Button>(R.id.btn_autofocus)
+        // Selettore di modalita' di fuoco: manual -> afs -> afc -> manual. Sostituisce il
+        // vecchio pulsante "AF" one-shot: il plugin ora espone un solo comando
+        // (exec focus_mode) e 'lensposition' e' onorato SOLO in manual, quindi la modalita'
+        // corrente deve essere visibile e cambiabile, altrimenti i +/- di "Fuoco" sembrano
+        // rotti mentre e' semplicemente attivo l'autofocus.
+        // Esposizione automatica on/off. E' una impostazione normale (passa da
+        // PUT /camera/settings), a differenza del fuoco che passa da exec.
+        btn_ae.setOnClickListener{
+            if (!canEditSettings()) return@setOnClickListener
+            settings.aeenable = !settings.aeenable
+            setSettings()
+        }
+
         btn_autofocus.setOnClickListener{
-            btn_autofocus.isEnabled = false
-            // api.triggerAutofocus() e' sincrona sul bridge seriale/radio (scansione
-            // AF + round trip, puo' impiegare un paio di secondi): fuori dal main
-            // thread per evitare ANR, come le altre chiamate api.*.
-            Thread {
-                val ok = api.triggerAutofocus()
-                // L'autofocus cambia lensposition lato camera senza passare da
-                // setSettings(): senza rileggere le impostazioni il valore mostrato
-                // in pannello resta quello vecchio anche se l'AF e' riuscito.
-                val refreshedSettings = if (ok) {
-                    try { api.getSettings() } catch (e: java.net.ConnectException) { null }
-                } else null
-                Handler(Looper.getMainLooper()).post {
-                    btn_autofocus.isEnabled = true
-                    if (ok) {
-                        if (refreshedSettings != null) {
-                            settings = refreshedSettings
-                            updateValues()
-                        }
-                    } else {
-                        Toast.makeText(App.activity,"Errore durante l'autofocus", Toast.LENGTH_LONG).show()
-                    }
-                }
-            }.start()
+            if (!settingsLoaded) return@setOnClickListener
+            // Ciclo semplice e prevedibile. Atterrare su "afs" fa partire il one-shot;
+            // per rifarlo si gira di nuovo. Niente scorciatoie nascoste su un pulsante
+            // da 18dp che deve restare leggibile a colpo d'occhio.
+            val current = FOCUS_MODES.indexOf(settings.afmode).let { if (it < 0) 0 else it }
+            applyFocusMode(FOCUS_MODES[(current + 1) % FOCUS_MODES.size])
         }
-
 
 
         rootView.findViewById<Button>(R.id.btn_quit).setOnClickListener{
@@ -580,6 +540,10 @@ class Window(private val context: Context) {
 
         btn_collapse.setOnClickListener {
            collapse()
+        }
+
+        btn_fullscreen.setOnClickListener {
+           toggleFullscreen()
         }
 
         // La chevron e' piccola e a volte manca il tap: anche l'etichetta dei metri
@@ -596,10 +560,36 @@ class Window(private val context: Context) {
             startAcquisition(true)
         }
 
-        serialPort = SerialPortConnection.newBuilder("/dev/ttyHS0", 4000000).flags(8192).build()
-        serialPort?.openConnection()
+        // openConnection() e' dichiarata throws Exception: non essendo protetta,
+        // una porta mancante o gia' occupata faceva uscire l'eccezione dal blocco init{}
+        // e crashare FloatingService all'avvio. Senza bridge l'app resta usabile
+        // (via IP, vedi Webserver.init con serialPort null), quindi non si muore qui.
+        serialPort = try {
+            SerialPortConnection.newBuilder("/dev/ttyHS0", 4000000)
+                .flags(8192)
+                .readSize(16384) // default 2048: a 4 Mbaud sono ~5ms di wire, troppe syscall
+                .build()
+                .also { it.openConnection() }
+        } catch (e: Exception) {
+            Log.e("UCamera", "Apertura /dev/ttyHS0 fallita: " + e.message, e)
+            Handler(Looper.getMainLooper()).post {
+                Toast.makeText(App.activity, "Porta seriale non disponibile", Toast.LENGTH_LONG).show()
+            }
+            null
+        }
+        // Stato iniziale coerente: finche' il primo getSettings() non e' arrivato i
+        // controlli restano disabilitati. Senza, con la camera spenta updateConnection()
+        // esce prima di aggiornare la UI e il pannello sembrava utilizzabile.
+        updateControlsEnabled()
+
         updateConnection()
 
+    }
+
+    private fun appVersionName(): String = try {
+        context.packageManager.getPackageInfo(context.packageName, 0).versionName ?: ""
+    } catch (e: Exception) {
+        ""
     }
 
     fun collapse(){
@@ -639,7 +629,10 @@ class Window(private val context: Context) {
     // valori in un colpo ed e' un'azione singola come avvia/ferma/autofocus, quindi
     // merita lo stesso trattamento per non restare "impallato" su tap ripetuti.
     fun resetSettings(onComplete: (() -> Unit)? = null){
-        if (!::settings.isInitialized) { onComplete?.invoke(); return } // primo fetch da updateConnection() non ancora arrivato
+        if (!settingsLoaded) { onComplete?.invoke(); return } // primo fetch da updateConnection() non ancora arrivato
+        // afmode NON si tocca: non e' scrivibile via settings (si cambia solo con
+        // exec focus_mode) e rimandarlo indietro con un valore diverso da quello
+        // corrente butterebbe la camera fuori dall'autofocus.
         settings.gain=1.0;
         settings.contrast= 1.0;
         settings.brightness= 0.0
@@ -648,6 +641,7 @@ class Window(private val context: Context) {
         settings.exposurevalue=0
         settings.lensposition=0.0
         settings.saturation= 1.0
+        settings.aeenable=true // default del manifest lato plugin
         setSettings(onComplete)
         updateValues()
 
@@ -655,7 +649,7 @@ class Window(private val context: Context) {
     }
 
     fun setSettings(onComplete: (() -> Unit)? = null){
-        if (!::settings.isInitialized) { onComplete?.invoke(); return } // primo fetch da updateConnection() non ancora arrivato
+        if (!settingsLoaded) { onComplete?.invoke(); return } // primo fetch da updateConnection() non ancora arrivato
         // Feedback immediato: il valore locale e' gia' stato mutato dal chiamante
         // (es. btn_plus/btn_minus) prima di arrivare qui, quindi si puo' mostrare
         // subito senza aspettare la conferma di rete (che puo' impiegare diversi
@@ -665,33 +659,134 @@ class Window(private val context: Context) {
         // api.setSettings() e' una chiamata sincrona sul bridge seriale: fuori dal
         // main thread per evitare ANR (chiamata da moltissimi listener +/-).
         Thread {
-            if(api.setSettings(settings)){
-                Handler(Looper.getMainLooper()).post { updateValues(); onComplete?.invoke() }
-            }else{
-                Handler(Looper.getMainLooper()).post {
-                    Toast.makeText(App.activity,"Errore durante la modifica delle impostazioni", Toast.LENGTH_LONG).show()
-                    onComplete?.invoke()
+            val result = api.setSettings(settings)
+            Handler(Looper.getMainLooper()).post {
+                updateValues()
+                // Il server risponde "success" anche quando scarta una chiave, e il motivo
+                // vero sta solo nell'array "message" (es. "Unsupported changes to gain
+                // property", "Cannot Set Settings during recording!"). Prima veniva buttato
+                // via e restava il toast generico, che non diceva nulla di utile.
+                val msg = result.message
+                if (!result.ok) {
+                    Toast.makeText(App.activity,
+                        msg ?: "Errore durante la modifica delle impostazioni",
+                        Toast.LENGTH_LONG).show()
+                } else if (msg != null) {
+                    Toast.makeText(App.activity, msg, Toast.LENGTH_LONG).show()
+                }
+                onComplete?.invoke()
+            }
+        }.start()
+    }
+
+    // Vero solo quando i controlli parametri sono realmente utilizzabili. Due condizioni,
+    // entrambe necessarie: servono le impostazioni lette dal server (prima non c'e' nulla
+    // di sensato da incrementare), e il server rifiuta qualunque PUT durante la
+    // registrazione ("Cannot Set Settings during recording!"), quindi in acquisizione i
+    // tap produrrebbero solo errori.
+    private fun canEditSettings() = settingsLoaded && !onAcquisition
+
+    // Aggancia i due pulsanti +/- di un controllo a un parametro Double con il suo
+    // intervallo valido. Il clamp sta qui, in un punto solo: prima ogni coppia di
+    // listener aveva la propria guardia scritta a mano, con i limiti sparsi nel codice.
+    private fun bindDoubleParam(
+        control: FrameLayout,
+        min: Double,
+        max: Double,
+        step: Double,
+        get: () -> Double,
+        set: (Double) -> Unit
+    ) {
+        fun apply(direction: Int) {
+            if (!canEditSettings()) return
+            val current = get()
+            // Arrotondamento a 2 decimali: con passo 0.1 la somma ripetuta accumula
+            // errore binario (0.1+0.1+0.1 = 0.30000000000000004), che poi si trascina
+            // nel JSON e rende impossibile la riverifica di setSettings().
+            val raw = current + direction * step
+            val next = (Math.round(raw * 100.0) / 100.0).coerceIn(min, max)
+            if (kotlin.math.abs(next - current) < 1e-9) return // gia' al fondo scala: niente richiesta
+            set(next)
+            setSettings()
+        }
+        control.findViewById<Button>(R.id.btn_plus).setOnClickListener { apply(+1) }
+        control.findViewById<Button>(R.id.btn_minus).setOnClickListener { apply(-1) }
+    }
+
+    // Indice del tempo di esposizione corrente nella tabella EXPOSURE_TIME. Se il valore
+    // non e' in tabella (il server non valida ne' arrotonda, e puo' essere stato impostato
+    // da un altro client o restare al default 2000 del manifest) si aggancia al piu'
+    // vicino: prima il ciclo non trovava corrispondenza e il valore restava a
+    // EXPOSURE_TIME[0], facendo saltare all'esposizione PIU' LENTA anche premendo "-".
+    private fun currentExposureIndex(): Int {
+        val i = EXPOSURE_TIME.indexOf(settings.exposureTime)
+        if (i >= 0) return i
+        return EXPOSURE_TIME.indices.minByOrNull {
+            kotlin.math.abs(EXPOSURE_TIME[it] - settings.exposureTime)
+        } ?: 0
+    }
+
+    // Un passo nella tabella dei tempi. La vecchia versione del pulsante "+" testava
+    // `id < EXPOSURE_TIME.size` invece di `size - 1`: sull'ultimo valore (1/2000) la
+    // guardia passava e EXPOSURE_TIME[11] su una lista di 11 elementi lanciava
+    // IndexOutOfBoundsException sul main thread, dentro il click listener -> crash.
+    private fun stepExposureTime(delta: Int) {
+        if (!canEditSettings()) return
+        val next = (currentExposureIndex() + delta).coerceIn(0, EXPOSURE_TIME.lastIndex)
+        if (EXPOSURE_TIME[next] == settings.exposureTime) return // fondo scala: no-op
+        settings.exposureTime = EXPOSURE_TIME[next]
+        setSettings()
+    }
+
+    // Cambio di modalita' di fuoco. Passa da PUT /camera/exec e non dai settings, quindi
+    // resta possibile anche durante l'acquisizione (a differenza di tutto il resto).
+    private fun applyFocusMode(mode: String) {
+        btn_autofocus.isEnabled = false
+        Thread {
+            val result = api.setFocusMode(mode)
+            // Il plugin aggiorna lensposition dai metadati quando entra in manual o
+            // dopo un one-shot: senza rilettura il pannello mostrerebbe il valore vecchio.
+            val refreshed = if (result.ok) {
+                try { api.getSettings() } catch (e: java.net.ConnectException) { null }
+            } else null
+            Handler(Looper.getMainLooper()).post {
+                btn_autofocus.isEnabled = settingsLoaded
+                if (result.ok) {
+                    if (refreshed != null) {
+                        settings = refreshed
+                        settingsLoaded = true
+                    } else {
+                        settings.afmode = mode
+                    }
+                    updateValues()
+                    // Su un pulsante da 40dp la sigla da sola non basta a capire cosa si
+                    // e' appena attivato: il nome esteso lo dice senza ambiguita'.
+                    Toast.makeText(App.activity,
+                        focusModeDescription(settings.afmode), Toast.LENGTH_SHORT).show()
+                } else {
+                    Toast.makeText(App.activity,
+                        result.message ?: "Cambio modalita' di fuoco non riuscito",
+                        Toast.LENGTH_LONG).show()
                 }
             }
         }.start()
     }
 
     fun updateValues(){
-        if (!::settings.isInitialized) return // primo fetch da updateConnection() non ancora arrivato
+        if (!settingsLoaded) { updateControlsEnabled(); return } // primo fetch da updateConnection() non ancora arrivato
         brightness_control.findViewById<TextView>(R.id.value).text=paramValueFormat.format(settings.brightness)
         contrast_control.findViewById<TextView>(R.id.value).text=paramValueFormat.format(settings.contrast)
         sharpness_control.findViewById<TextView>(R.id.value).text=paramValueFormat.format(settings.sharpness)
         saturation_control.findViewById<TextView>(R.id.value).text=paramValueFormat.format(settings.saturation)
         exposure_control.findViewById<TextView>(R.id.value).text=paramValueFormat.format(settings.exposurevalue)
 
-        var id=0
-        for(v in EXPOSURE_TIME){
-            if(v==settings.exposureTime){
-                exposuretime_control.findViewById<TextView>(R.id.value).text=EXPOSURE_TIME_LABEL[id]
-                break
-            }
-            id++
-        }
+        // Il valore puo' non essere in tabella (il server accetta qualsiasi intero):
+        // prima mancava il ramo else e l'etichetta restava quella precedente, cioe' la
+        // UI mostrava un tempo di esposizione che la camera non stava usando.
+        val expIdx = EXPOSURE_TIME.indexOf(settings.exposureTime)
+        exposuretime_control.findViewById<TextView>(R.id.value).text =
+            if (expIdx >= 0) EXPOSURE_TIME_LABEL[expIdx]
+            else "${settings.exposureTime}µs"
 
 
         lensposition_control.findViewById<TextView>(R.id.value).text=paramValueFormat.format(settings.lensposition)
@@ -700,7 +795,115 @@ class Window(private val context: Context) {
 
         gain_control.findViewById<TextView>(R.id.value).text=paramValueFormat.format((settings.gain*100))
 
+        btn_ae.text = if (settings.aeenable) "AUTO" else "MAN"
 
+        updateControlsEnabled()
+    }
+
+    // Unico punto che decide quali controlli sono utilizzabili, invece di spargere
+    // isEnabled nei listener. Tre condizioni indipendenti:
+    //  - settingsLoaded: prima del primo GET non c'e' niente di reale da modificare;
+    //  - onAcquisition: il server rifiuta ogni PUT /camera/settings durante la
+    //    registrazione, e lo scatto di prova andrebbe in conflitto con lo scatto
+    //    manuale (per questo il server lo rifiuta a sua volta);
+    //  - afmode: lensposition e' onorato da libcamera solo in manual.
+    private fun updateControlsEnabled() {
+        val editable = canEditSettings()
+        for (control in listOf(brightness_control, contrast_control, sharpness_control,
+                               saturation_control)) {
+            setParamEnabled(control, editable)
+        }
+        setParamEnabled(lensposition_control, editable && settings.afmode == FOCUS_MANUAL)
+
+        // I due gruppi dell'esposizione si escludono, perche' libcamera li tratta cosi':
+        // con AE attivo l'AGC riscrive tempo e guadagno a ogni frame (e i relativi
+        // controlli non farebbero nulla), con AE spento e' la compensazione EV a non
+        // avere piu' senso. Mostrarli tutti e tre sempre attivi era il motivo per cui
+        // "il cambio ISO non avviene" sembrava un bug dell'app.
+        setParamEnabled(exposure_control, editable && settings.aeenable)
+        setParamEnabled(exposuretime_control, editable && !settings.aeenable)
+        setParamEnabled(gain_control, editable && !settings.aeenable)
+        btn_ae.isEnabled = editable
+
+        // La sigla sui pulsanti si legge come azione ("premi per fare AF-C"), non come
+        // stato. L'indicazione di come e' impostato ADESSO sta quindi nelle etichette,
+        // che non sono cliccabili e quindi non possono essere fraintese. Serve anche a
+        // spiegare perche' certi +/- sono spenti: in AF-C "Fuoco" non ha effetto, e con
+        // l'esposizione automatica non ne hanno "Tempo di esposizione" e "ISO".
+        val focusTag = if (settingsLoaded) focusModeLabel(settings.afmode) else "--"
+        val aeTag = if (!settingsLoaded) "--" else if (settings.aeenable) "AUTO" else "MAN"
+        lensposition_control.findViewById<TextView>(R.id.label).text = "Fuoco · $focusTag"
+        exposure_control.findViewById<TextView>(R.id.label).text = "Esposizione · $aeTag"
+
+        // Il fuoco passa da exec, non dai settings: resta disponibile in acquisizione.
+        btn_autofocus.isEnabled = settingsLoaded
+        // Il modo corrente sul pulsante va scritto QUI e non in updateValues(), che esce
+        // in anticipo finche' le impostazioni non sono arrivate: in quel caso restava il
+        // testo del layout, che sembrava uno stato ("AF") senza esserlo. Serve anche a
+        // capire perche' i +/- di "Fuoco" non rispondono: sono onorati solo in manuale.
+        btn_autofocus.text = if (settingsLoaded) focusModeLabel(settings.afmode) else "--"
+        btn_reset_settings.isEnabled = editable
+        btn_preview_image.isEnabled = settingsLoaded && !onAcquisition
+    }
+
+    private fun setParamEnabled(control: FrameLayout, enabled: Boolean) {
+        control.findViewById<Button>(R.id.btn_plus).isEnabled = enabled
+        control.findViewById<Button>(R.id.btn_minus).isEnabled = enabled
+        control.alpha = if (enabled) 1.0f else 0.4f
+    }
+
+    // Alterna finestra compatta e tutto schermo. La SurfaceTexture viene distrutta e
+    // ricreata da updateViewLayout(), quindi la preview si ferma e riparte da sola
+    // tramite SurfaceTextureListener - a patto che stop/start siano simmetrici
+    // (vedi stopPreview(), che ora azzera i player).
+    fun toggleFullscreen() {
+        if (!isFullscreen) {
+            compactX = windowParams.x
+            compactY = windowParams.y
+        }
+        isFullscreen = !isFullscreen
+        btn_fullscreen.text = if (isFullscreen) "min" else "FS"
+        if (isFullscreen) {
+            // A tutto schermo il corpo deve essere visibile, altrimenti si otterrebbe
+            // uno schermo intero vuoto con la sola barra del titolo.
+            body.visibility = LinearLayout.VISIBLE
+            btn_collapse.setBackgroundResource(R.drawable.down)
+        }
+        applyPreviewSize()
+        calculateSizeAndPosition(windowParams, windowWidth, currentCompactHeight())
+        try {
+            windowManager.updateViewLayout(rootView, windowParams)
+        } catch (e: Exception) {
+            Log.e("UCamera", "toggleFullscreen: " + e.message, e)
+        }
+    }
+
+    // Altezza della finestra compatta in base al pannello aperto (ignorata in fullscreen).
+    private fun currentCompactHeight(): Int {
+        val anyPanelOpen = settings_panel.visibility == FrameLayout.VISIBLE ||
+                acquisition_panel.visibility == FrameLayout.VISIBLE ||
+                other_panel.visibility == FrameLayout.VISIBLE
+        return if (anyPanelOpen) windowHeightMax else windowHeight
+    }
+
+    // La preview e' larga 150dp nel layout compatto: a tutto schermo va allargata,
+    // altrimenti si guadagna spazio senza vedere meglio. La proporzione dell'immagine
+    // la preserva il renderer (vedi SerialJpegPlayer.renderFrame), non questa misura.
+    private fun applyPreviewSize() {
+        val dm = getCurrentDisplayMetrics()
+        setSize(
+            preview_container,
+            if (isFullscreen) (dm.widthPixels * 0.5f).toInt()
+            else (previewWidthCompact * dm.density).toInt(),
+            MATCH,
+        )
+    }
+
+    private fun setSize(v: View, width: Int, height: Int) {
+        val lp = v.layoutParams ?: return
+        lp.width = width
+        lp.height = height
+        v.layoutParams = lp
     }
 
     init {
@@ -726,18 +929,28 @@ class Window(private val context: Context) {
     }
 
 
+    // Ogni passo in un try/catch suo: prima erano tutti in un unico blocco, quindi il
+    // fallimento del primo (p.es. removeView su una finestra gia' rimossa) saltava tutti
+    // gli altri, lasciando aperti polling, delegate seriali e la porta stessa.
     fun close() {
+        runQuietly("stopStatusPolling") { stopStatusPolling() }
+        runQuietly("stopPreview") { stopPreview() }
+        runQuietly("api.shutdown") { if (::api.isInitialized) api.shutdown() }
+        runQuietly("serialPort.close") { serialPort?.closeConnection(); serialPort = null }
+        runQuietly("removeView") { windowManager.removeView(rootView) }
+    }
+
+    private inline fun runQuietly(what: String, block: () -> Unit) {
         try {
-            stopStatusPolling()
-            stopPreview()
-            windowManager.removeView(rootView)
+            block()
         } catch (e: Exception) {
-            // Ignore exception for now, but in production, you should have some
-            // warning for the user here.
+            Log.e("UCamera", "close/$what: " + e.message)
         }
     }
 
     fun openAcquisition(){
+        // A tutto schermo l'apertura/chiusura dei pannelli non deve toccare le
+        // dimensioni della finestra, altrimenti la riporterebbe a quelle compatte.
         if(acquisition_panel.visibility==FrameLayout.VISIBLE){
             acquisition_panel.visibility=FrameLayout.GONE
             other_panel.visibility=FrameLayout.GONE
@@ -755,6 +968,8 @@ class Window(private val context: Context) {
     }
 
     fun openConfig(){
+        // A tutto schermo l'apertura/chiusura dei pannelli non deve toccare le
+        // dimensioni della finestra, altrimenti la riporterebbe a quelle compatte.
         if(settings_panel.visibility==FrameLayout.VISIBLE){
             acquisition_panel.visibility=FrameLayout.GONE
             settings_panel.visibility=FrameLayout.GONE
@@ -773,6 +988,8 @@ class Window(private val context: Context) {
     }
 
     fun openOther(){
+        // A tutto schermo l'apertura/chiusura dei pannelli non deve toccare le
+        // dimensioni della finestra, altrimenti la riporterebbe a quelle compatte.
         if(other_panel.visibility==FrameLayout.VISIBLE){
             acquisition_panel.visibility=FrameLayout.GONE
             settings_panel.visibility=FrameLayout.GONE
@@ -813,7 +1030,9 @@ class Window(private val context: Context) {
                    setAcquisitionState(true)
 
                    Handler(Looper.getMainLooper()).post {
-                       Toast.makeText(App.activity,"Errore durante l'arresto dell'acquisizione", Toast.LENGTH_LONG).show()
+                       Toast.makeText(App.activity,
+                           api.lastServerMessages.firstOrNull() ?: "Errore durante l'arresto dell'acquisizione",
+                           Toast.LENGTH_LONG).show()
                    }
                }
            }else{
@@ -832,7 +1051,9 @@ class Window(private val context: Context) {
                    }else{
                        setAcquisitionState(false)
                        Handler(Looper.getMainLooper()).post {
-                           Toast.makeText(App.activity,"Errore durante l'avvio dell'acquisizione", Toast.LENGTH_LONG).show()
+                           Toast.makeText(App.activity,
+                               api.lastServerMessages.firstOrNull() ?: "Errore durante l'avvio dell'acquisizione",
+                               Toast.LENGTH_LONG).show()
                        }
                    }
                }else{
@@ -842,7 +1063,9 @@ class Window(private val context: Context) {
                    }else{
                        setAcquisitionState(false)
                        Handler(Looper.getMainLooper()).post {
-                           Toast.makeText(App.activity,"Errore durante l'avvio dell'acquisizione", Toast.LENGTH_LONG).show()
+                           Toast.makeText(App.activity,
+                               api.lastServerMessages.firstOrNull() ?: "Errore durante l'avvio dell'acquisizione",
+                               Toast.LENGTH_LONG).show()
                        }
                    }
                }
@@ -868,6 +1091,10 @@ class Window(private val context: Context) {
                 // btn_start_video resta nascosto (acquisizione video disabilitata, vedi initWindow)
                 onAcquisition = false
             }
+            // In acquisizione il server rifiuta sia PUT /camera/settings sia
+            // /camera/capture: i controlli vanno disabilitati, non lasciati a produrre
+            // errori. Il fuoco resta disponibile (passa da exec).
+            updateControlsEnabled()
         }
     }
 
@@ -880,9 +1107,18 @@ class Window(private val context: Context) {
     private val statusPollRunnable = object : Runnable {
         override fun run() {
             if (!statusPollingActive) return
+            if (captureInFlight) {
+                // Riprova al giro dopo: perdere un aggiornamento di stato non costa
+                // nulla, ritardare lo scatto si'.
+                statusPollHandler.postDelayed(this, statusPollIntervalMs)
+                return
+            }
             Thread {
                 val acqStatus = api.getAcquisitionStatus()
-                val depthMeters = api.getDepthMeters()
+                // getDepthMeters() si auto-disattiva dopo qualche errore: la rotta
+                // /location_system/status non e' esposta dal server, e continuare a
+                // interrogarla costa uno slot del bridge seriale ogni ciclo per un 404.
+                val depthMeters = if (api.depthPollingEnabled) api.getDepthMeters() else null
                 Handler(Looper.getMainLooper()).post {
                     if (acqStatus != null) {
                         setAcquisitionState(acqStatus.running)
@@ -914,8 +1150,16 @@ class Window(private val context: Context) {
 
     fun updateConnection(answerAddress: Boolean=false){
 
+        // Chiude il Webserver precedente PRIMA di sostituirlo: ogni init() registra un
+        // nuovo SerialBridge come delegate della porta seriale, e senza shutdown i
+        // vecchi restavano registrati per sempre. Dopo N riconnessioni ogni risposta
+        // veniva parsata N volte, completando altrettanti future orfani.
+        if (::api.isInitialized) {
+            try { api.shutdown() } catch (e: Exception) { Log.e("UCamera", "shutdown: " + e.message) }
+        }
+
         api= Webserver();
-        api.init("http://"+remote_host+":"+remote_port, serialPort)
+        api.init("http://"+remote_host+":"+remote_port, serialPort, context)
 
         // getVersion()/getSettings() sono chiamate sincrone sul bridge seriale/radio
         // (fino a 20s di timeout, vedi SerialBridge): fuori dal main thread per
@@ -993,6 +1237,7 @@ class Window(private val context: Context) {
 
             Handler(Looper.getMainLooper()).post {
                 settings = fetchedSettings
+                settingsLoaded = true
                 setAcquisitionState(acqStatus?.running ?: false)
                 if (acqStatus?.running == true) {
                     status.text = "Dataset ${acqStatus.datasetId} Foto ${acqStatus.items}"
@@ -1000,8 +1245,13 @@ class Window(private val context: Context) {
                 startStatusPolling()
 
                 updateValues()
-                if (answerAddress)
+                if (answerAddress) {
+                    // "Aggiorna preview" fermava la preview senza mai riavviarla (la
+                    // startPreview() in fondo a questo blocco era commentata): il
+                    // pulsante faceva l'opposto di quello che dichiara.
                     stopPreview()
+                    startPreview()
+                }
 
                 if (!::s.isInitialized) {
                     s=SocketIOConnection()
@@ -1075,6 +1325,11 @@ class Window(private val context: Context) {
     }
     fun startPreview(){
         val surface = previewSurface ?: return
+        // Ferma prima un eventuale player ancora attivo: startPreview() puo' essere
+        // chiamata piu' volte (surface ricreata a ogni resize della finestra, incluso il
+        // passaggio a tutto schermo) e sovrascrivere il campo lasciava il delegate
+        // precedente registrato sulla seriale, a decodificare in parallelo.
+        stopPreview()
         when (fpvPreviewMode) {
             FpvPreviewMode.JPEG_SERIAL -> {
                 serialJpegVideoPlayer = SerialJpegPlayer(serialPort, surface)
@@ -1116,9 +1371,14 @@ class Window(private val context: Context) {
         libVlc = null
     }
     */
+    // Azzera i campi dopo lo stop: senza, ogni chiamata successiva rifermava player
+    // gia' fermi e, soprattutto, startPreview() non aveva modo di sapere se ce n'era
+    // ancora uno vivo da chiudere.
     fun stopPreview(){
         videoPlayer?.stop()
+        videoPlayer = null
         serialJpegVideoPlayer?.stop()
+        serialJpegVideoPlayer = null
     }
 
     @SuppressLint("ResourceAsColor")

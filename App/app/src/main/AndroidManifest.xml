@@ -9,6 +9,10 @@
     <!-- BLUETOOTH PERMISSION -->
     <!-- Request legacy Bluetooth permissions on older devices. -->
     <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
+    <!-- registerNetworkCallback: serve per individuare la rete Wi-Fi su cui e'
+         raggiungibile la camera e instradarci sopra lo scatto di prova (NetworkProbe).
+         Senza, con i dati mobili attivi la richiesta uscirebbe dalla rete sbagliata. -->
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.BLUETOOTH" />
     <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" />
     <!--

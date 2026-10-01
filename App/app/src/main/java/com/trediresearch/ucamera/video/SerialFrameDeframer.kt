@@ -1,89 +1,49 @@
 package com.trediresearch.ucamera.video
 
-import android.util.Log
+import com.trediresearch.ucamera.webserver.SerialFrame
+import com.trediresearch.ucamera.webserver.SerialFrameReader
 
 /**
- * Ricostruisce i singoli pacchetti RTP dal flusso di byte continuo che
- * arriva dalla seriale, secondo il framing definito nel firmware ESP32:
+ * Ricostruisce i pacchetti della corsia video FPV dal flusso di byte della seriale,
+ * secondo il framing dell'ESP32 (`0xAA 0x55` + LEN uint16 LE + payload + XOR del payload).
+ * Il formato non e' modificabile: il firmware resta quello che e'.
  *
- *   [0]     SYNC_0   = 0xAA
- *   [1]     SYNC_1   = 0x55
- *   [2..3]  LEN      = lunghezza payload (uint16, little-endian)
- *   [4..]   PAYLOAD  = pacchetto RTP grezzo
- *   [ultimo] CHECKSUM = XOR di tutti i byte del payload
+ * Rispetto all'implementazione precedente cambia solo il *come* si legge, delegando a
+ * [SerialFrameReader], e si correggono due difetti che stavano entrambi sul thread che
+ * deve drenare la UART:
  *
- * Uso: alimenta i byte grezzi letti dalla seriale con feed(), e ogni volta
- * che un frame completo e valido viene ricostruito, onPacket viene invocato
- * con il pacchetto RTP grezzo.
+ *  - su checksum errato si ripartiva **dopo** il frame scartato invece che da sync + 1,
+ *    quindi un frame valido che iniziasse dentro la finestra di un falso aggancio andava
+ *    perso (su lunghezza implausibile si riprovava, ma saltando 2 byte alla volta);
+ *  - `buffer += nuoviByte` seguito da una `findSync()` che riscandiva da capo rendeva il
+ *    deframer **quadratico**: circa 18 riallocazioni e 18 scansioni complete per ogni
+ *    frame da ~36 KB.
  */
 class SerialFrameDeframer(
     private val onPacket: (ByteArray) -> Unit
 ) {
-    private val SYNC_0: Byte = 0xAA.toByte()
-    private val SYNC_1: Byte = 0x55.toByte()
-    // 40000: l'ESP32 (SkydroidSerial2Net/main.cpp) ora ricompone i chunk FPV in
-    // RAM e inoltra ogni frame video come un solo pacchetto seriale (invece di
-    // uno per chunk), fino a FPV_MAX_CHUNKS * FPV_MAX_CHUNK_LEN (~35.8KB) - va
-    // tenuto sopra quel massimo, non piu' limitato alla dimensione di un
-    // singolo chunk UDP.
-    private val MAX_PAYLOAD = 40000
+    companion object {
+        // L'ESP32 ricompone i chunk UDP e inoltra un frame intero per pacchetto seriale,
+        // fino a FPV_MAX_CHUNKS * FPV_MAX_CHUNK_LEN (~35,8 KB).
+        private const val MAX_PAYLOAD = 40000
+    }
 
-    // Buffer di accumulo per i byte che arrivano frammentati tra chiamate feed()
-    private var buffer = ByteArray(0)
+    // Nessun filtro di plausibilita' sul contenuto: a differenza delle risposte REST, che
+    // iniziano sempre con "<codice>\n", un frame video e' binario arbitrario. Restano la
+    // validazione della lunghezza e il checksum.
+    private val reader = SerialFrameReader(
+        SerialFrame.FPV_SYNC_0,
+        SerialFrame.FPV_SYNC_1,
+        MAX_PAYLOAD,
+    ) { payload ->
+        onPacket(payload)
+    }
 
     fun feed(newBytes: ByteArray, len: Int) {
-        buffer += newBytes.copyOfRange(0, len)
-        parseBuffer()
+        reader.feed(newBytes, len)
     }
 
-    private fun parseBuffer() {
-        while (true) {
-            // 1. Trova SYNC_0 SYNC_1 nel buffer, scarta tutto quello che precede
-            val syncIndex = findSync()
-            if (syncIndex < 0) {
-                // Nessun sync trovato: tieni solo l'ultimo byte (potrebbe essere
-                // l'inizio di un SYNC_0 che sara' completato dal prossimo feed())
-                if (buffer.isNotEmpty()) {
-                    buffer = buffer.copyOfRange(buffer.size - 1, buffer.size)
-                }
-                return
-            }
-            if (syncIndex > 0) {
-                buffer = buffer.copyOfRange(syncIndex, buffer.size)
-            }
-
-            // 2. Servono almeno 4 byte per header completo (sync+len)
-            if (buffer.size < 4) return
-
-            val len = (buffer[2].toInt() and 0xFF) or ((buffer[3].toInt() and 0xFF) shl 8)
-            if (len <= 0 || len > MAX_PAYLOAD) {
-                // Lunghezza non plausibile: probabilmente un falso sync, scarta 2 byte e riprova
-                buffer = buffer.copyOfRange(2, buffer.size)
-                continue
-            }
-
-            val totalFrameLen = 4 + len + 1  // header + payload + checksum
-            if (buffer.size < totalFrameLen) return  // aspetta altri byte
-
-            val payload = buffer.copyOfRange(4, 4 + len)
-            val receivedChecksum = buffer[4 + len]
-            var computedChecksum: Byte = 0
-            for (b in payload) computedChecksum = (computedChecksum.toInt() xor b.toInt()).toByte()
-
-            if (computedChecksum == receivedChecksum) {
-                onPacket(payload)
-               // Log.d("SerialFrameDeframer", "Ricevuto pacchetto di lunghezza $len")
-            }
-            // altrimenti: pacchetto corrotto, scartato silenziosamente (e' UDP, va bene perderlo)
-
-            buffer = buffer.copyOfRange(totalFrameLen, buffer.size)
-        }
-    }
-
-    private fun findSync(): Int {
-        for (i in 0 until buffer.size - 1) {
-            if (buffer[i] == SYNC_0 && buffer[i + 1] == SYNC_1) return i
-        }
-        return -1
+    fun reset() {
+        reader.reset()
     }
 }

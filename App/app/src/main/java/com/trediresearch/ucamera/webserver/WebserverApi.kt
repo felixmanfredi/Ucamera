@@ -13,8 +13,12 @@ enum class ConverterFormat {
 }
 
 interface WebserverApi {
+    // Lo slash finale e' obbligatorio: il server registra la rotta come "/version/" e
+    // senza slash risponde 308. Sul bridge seriale/radio il redirect viene seguito
+    // dall'ESP32 (setFollowRedirects), ma costa un round trip intero - ed e' la chiamata
+    // usata come sonda di raggiungibilita' IP, dove la latenza conta.
     @Headers("Content-Type: application/json")
-    @GET("version")
+    @GET("version/")
     @RequestFormat(ConverterFormat.JSON)
     @ResponseFormat("application/json")
     fun getVersion():Call<response<version>>

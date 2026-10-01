@@ -148,7 +148,10 @@ class ImageViewer(private val context: Context,private val image:Bitmap?) {
         val sb = StringBuilder()
         val action = event.action
         val actionCode = action and MotionEvent.ACTION_MASK
-        sb.append("event ACTION_").append(names[actionCode])
+        // getOrElse: ACTION_HOVER_EXIT(10), ACTION_BUTTON_PRESS(11) e altri codici
+        // oltre la tabella lanciavano ArrayIndexOutOfBoundsException mentre si
+        // guardava lo scatto di prova.
+        sb.append("event ACTION_").append(names.getOrElse(actionCode) { actionCode.toString() })
         if (actionCode == MotionEvent.ACTION_POINTER_DOWN || actionCode == MotionEvent.ACTION_POINTER_UP) {
             sb.append("(pid ").append(action shr MotionEvent.ACTION_POINTER_ID_SHIFT)
             sb.append(")")

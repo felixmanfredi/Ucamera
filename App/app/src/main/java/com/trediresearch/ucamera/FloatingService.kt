@@ -25,11 +25,24 @@ class FloatingService : Service() {
 
     override fun onBind(intent: Intent?): IBinder? = null
 
+    // Anche quando e' il sistema a terminare il servizio la finestra va chiusa:
+    // altrimenti restano vivi il ReadThread su /dev/ttyHS0 e il polling periodico.
+    override fun onDestroy() {
+        window?.close()
+        window = null
+        super.onDestroy()
+    }
+
 
     /**
      * Remove the foreground notification and stop the service.
      */
     private fun stopService() {
+        // Window.close() rilascia polling, preview, delegate del bridge e la porta
+        // seriale: senza, uscendo dalla notifica il processo restava con /dev/ttyHS0
+        // aperto e il suo ReadThread vivo.
+        window?.close()
+        window = null
         stopForeground(true)
         stopSelf()
     }
@@ -109,6 +122,8 @@ class FloatingService : Service() {
     }
 
 
+    private var window: Window? = null
+
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
 
         val command = intent?.getStringExtra(INTENT_COMMAND)
@@ -129,9 +144,13 @@ class FloatingService : Service() {
         //if (command == INTENT_COMMAND_NOTE) {
             if (!drawOverOtherAppsEnabled()) {
                 startPermissionActivity()
-            } else {
-                val window = Window(this)
-                window.open()
+            } else if (window == null) {
+                // UNA SOLA Window per servizio. onStartCommand puo' essere richiamata piu'
+                // volte (il servizio e' START_STICKY, piu' ogni nuovo Intent), e ogni Window
+                // apre /dev/ttyHS0 con un proprio ReadThread: due lettori sullo stesso fd si
+                // spartiscono i byte in arrivo e corrompono sia le risposte REST sia i frame
+                // video, in modo intermittente e difficilissimo da diagnosticare.
+                window = Window(this).also { it.open() }
             }
         //}
 
