@@ -441,10 +441,30 @@ class Webserver {
     // a fuoco a ogni invocazione), "afc" (continuo). Passa da exec e non dai settings proprio
     // perche' set_settings e' bloccato durante la registrazione, mentre il fuoco deve poter
     // essere cambiato anche in missione.
-    fun setFocusMode(mode: String): CommandResult {
+    //
+    // range/speed/window sono opzionali e governano COME la camera cerca il fuoco:
+    // contano solo in afs/afc, in manuale libcamera li ignora. Si inviano solo quelli
+    // valorizzati, cosi' un plugin vecchio che non li conosce riceve esattamente la
+    // richiesta di prima. Attenzione: 'mode' e' obbligatorio lato server, quindi per
+    // cambiare il solo range va comunque rimandato il modo corrente - e se quel modo e'
+    // "afs" il server rilancia un ciclo one-shot, che qui e' il comportamento voluto
+    // (si rimette a fuoco con i parametri appena cambiati).
+    fun setFocusMode(
+        mode: String,
+        range: String? = null,
+        speed: String? = null,
+        window: List<Double>? = null,
+    ): CommandResult {
         try {
+            val params = HashMap<String, Any>()
+            params["mode"] = mode
+            if (range != null) params["range"] = range
+            if (speed != null) params["speed"] = speed
+            // Lista vuota = "torna a fotogramma pieno", che e' un comando legittimo e va
+            // spedito: il controllo e' su null, non su isEmpty().
+            if (window != null) params["window"] = window
             val resp = apiservice.execCameraCommand(
-                ExecCommandRequest("focus_mode", mapOf("mode" to mode))
+                ExecCommandRequest("focus_mode", params)
             ).execute()
             val sessionResponse = resp.body()
             if (sessionResponse != null && sessionResponse.status == "success") {
@@ -452,7 +472,10 @@ class Webserver {
             }
             // Device non ancora aggiornato: il plugin vecchio conosce solo "autofocus" e
             // risponde errore a focus_mode. Il one-shot resta ottenibile, gli altri modi no.
-            if (mode == FOCUS_SINGLE) {
+            // Il ripiego vale solo per il comando "nudo": se erano stati chiesti anche
+            // range/velocita'/finestra, 'autofocus' li ignorerebbe e riporteremmo un
+            // successo per qualcosa che non e' stato applicato.
+            if (mode == FOCUS_SINGLE && range == null && speed == null && window == null) {
                 Log.w(TAG, "setFocusMode: focus_mode rifiutato, ritento con il vecchio 'autofocus'")
                 if (triggerLegacyAutofocus()) return CommandResult(true)
             }

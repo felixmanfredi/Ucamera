@@ -283,6 +283,54 @@
                         </Button>
 
                     </LinearLayout>
+
+                    <!-- Parametri della RICERCA del fuoco. Contano solo quando e' la
+                         camera a cercarlo (AF-S / AF-C): in manuale libcamera li ignora,
+                         e su un device con il plugin vecchio non esistono proprio. In
+                         entrambi i casi il gruppo sparisce, vedi
+                         Window.updateControlsEnabled(). Parte "gone" perche' quando la
+                         finestra viene creata le impostazioni non sono ancora arrivate. -->
+                    <LinearLayout
+                        android:id="@+id/af_search_group"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:orientation="vertical"
+                        android:visibility="gone">
+
+                        <include android:id="@+id/afrange_control" layout="@layout/layout_param"></include>
+
+                        <LinearLayout
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:orientation="horizontal"
+                            android:gravity="center_vertical">
+
+                            <include
+                                android:id="@+id/afspeed_control"
+                                android:layout_width="wrap_content"
+                                android:layout_height="wrap_content"
+                                layout="@layout/layout_param"></include>
+
+                            <!-- Finestra di messa a fuoco: tutto il fotogramma oppure il
+                                 riquadro centrale. A fotogramma pieno uno sfondo a forte
+                                 contrasto puo' vincere sul soggetto, e la camera mette a
+                                 fuoco dietro di esso. -->
+                            <Button
+                                android:id="@+id/btn_afwindow"
+                                android:layout_width="56dp"
+                                android:layout_height="40dp"
+                                android:layout_marginStart="8dp"
+                                android:minWidth="0dp"
+                                android:paddingLeft="0dp"
+                                android:paddingRight="0dp"
+                                android:textSize="9sp"
+                                android:text="--">
+                            </Button>
+
+                        </LinearLayout>
+
+                    </LinearLayout>
+
                     <LinearLayout
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
