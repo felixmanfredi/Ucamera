@@ -9,6 +9,11 @@ import com.trediresearch.ucamera.webserver.AF_SPEEDS
 import com.trediresearch.ucamera.webserver.AF_SPEED_FAST
 import com.trediresearch.ucamera.webserver.AF_SPEED_NORMAL
 import com.trediresearch.ucamera.webserver.AF_WINDOW_CENTER
+import com.trediresearch.ucamera.webserver.AF_WINDOW_FULL
+import com.trediresearch.ucamera.webserver.AF_WINDOW_MIN
+import com.trediresearch.ucamera.webserver.AF_WINDOW_STEP
+import com.trediresearch.ucamera.webserver.afWindowForSize
+import com.trediresearch.ucamera.webserver.afWindowSize
 import com.trediresearch.ucamera.webserver.ExecCommandRequest
 import com.trediresearch.ucamera.webserver.afRangeLabel
 import com.trediresearch.ucamera.webserver.afSpeedLabel
@@ -22,11 +27,9 @@ import org.junit.Test
 /**
  * Parametri di ricerca del fuoco (afrange / afspeed / afwindow).
  *
- * Il test che conta davvero e' il primo gruppo: i tre campi sono NULLABILI apposta,
- * perche' l'app fa PUT dell'intero oggetto settings a ogni tap sui +/- e un device con
- * il plugin vecchio non conosce quelle chiavi. Se finissero nel JSON con un default
- * locale, ogni singolo tocco su luminosita' o contrasto si porterebbe dietro un
- * "Unsupported changes to afrange property" dal server.
+ * I tre campi sono nullabili finche' non arriva il primo GET: l'app fa PUT dell'intero
+ * oggetto settings a ogni tap sui +/-, e deve rispedire solo i valori letti dal server,
+ * mai un default locale.
  */
 class FocusSettingsTest {
 
@@ -84,12 +87,6 @@ class FocusSettingsTest {
         assertTrue(json, json.contains("\"mode\":\"afc\""))
     }
 
-    @Test
-    fun `exec senza parametri resta identico a prima`() {
-        // Il plugin vecchio deve continuare a ricevere esattamente la vecchia richiesta.
-        assertEquals("""{"cmd":"autofocus"}""", gson.toJson(ExecCommandRequest("autofocus")))
-    }
-
     // --- vocabolario: deve restare allineato al plugin -----------------------------
 
     @Test
@@ -107,6 +104,24 @@ class FocusSettingsTest {
         assertTrue("y+h fuori dal fotogramma", y + h <= 1.0)
     }
 
+    @Test
+    fun `ogni dimensione della finestra resta centrata e dentro il fotogramma`() {
+        assertEquals(emptyList<Double>(), afWindowForSize(AF_WINDOW_FULL))
+        assertEquals(AF_WINDOW_CENTER, afWindowForSize(40))
+        for (p in AF_WINDOW_MIN until AF_WINDOW_FULL step AF_WINDOW_STEP) {
+            val (x, y, w, h) = afWindowForSize(p)
+            assertEquals("lato $p%", p / 100.0, w, 1e-9)
+            assertEquals(w, h, 1e-9)
+            assertEquals("centrata orizzontalmente ($p%)", 1.0, 2 * x + w, 1e-3)
+            assertEquals("centrata verticalmente ($p%)", 1.0, 2 * y + h, 1e-3)
+            assertTrue("fuori dal fotogramma ($p%)", x >= 0.0 && x + w <= 1.0)
+            // andata e ritorno: la dimensione letta e' quella impostata
+            assertEquals(p, afWindowSize(afWindowForSize(p)))
+        }
+        assertEquals(null, afWindowSize(null))
+        assertEquals(AF_WINDOW_FULL, afWindowSize(emptyList()))
+    }
+
     // --- etichette ----------------------------------------------------------------
 
     @Test
@@ -117,7 +132,7 @@ class FocusSettingsTest {
         assertEquals("STD", afSpeedLabel(AF_SPEED_NORMAL))
         assertEquals("RAPIDA", afSpeedLabel(AF_SPEED_FAST))
         assertEquals("PIENO", afWindowLabel(emptyList()))
-        assertEquals("CENTRO", afWindowLabel(AF_WINDOW_CENTER))
+        assertEquals("40%", afWindowLabel(AF_WINDOW_CENTER))
 
         // null = device che non espone il parametro: nessuna etichetta inventata.
         assertEquals("--", afRangeLabel(null))

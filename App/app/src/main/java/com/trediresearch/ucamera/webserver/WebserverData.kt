@@ -40,18 +40,13 @@ data class  settings(
     // PUT /camera/exec {"cmd":"focus_mode"}, cosi' restano modificabili anche in
     // acquisizione, quando set_settings e' bloccato.
     //
-    // Sono NULLABILI di proposito, ed e' la parte importante: Gson omette i campi null,
-    // quindi su un device con il plugin vecchio - che non conosce queste chiavi - non
-    // vengono mai spediti. Con un default non-null finirebbero nel PUT dell'intero
-    // oggetto che facciamo a ogni tap sui +/-, e il server risponderebbe "Unsupported
-    // changes to afrange property" a ogni singolo tocco. Null significa quindi "questo
-    // device non li espone": l'interfaccia nasconde la riga, vedi
-    // Window.updateControlsEnabled().
+    // Nullabili finche' non arriva il primo GET: Gson omette i null, quindi nel PUT
+    // dell'intero oggetto (a ogni tap sui +/-) finisce solo il valore riletto dal
+    // server, mai un default locale inventato.
     @SerializedName("afrange") var afrange:String?=null,
     @SerializedName("afspeed") var afspeed:String?=null,
     // Finestra di messa a fuoco come frazioni del fotogramma [x, y, w, h] in 0..1.
-    // Lista VUOTA = fotogramma intero (e' un valore legittimo, non "assente"): solo
-    // null significa che il device non supporta il parametro.
+    // Lista VUOTA = fotogramma intero (e' un valore legittimo, non "assente").
     @SerializedName("afwindow") var afwindow:List<Double>?=null,
 
     )
@@ -102,6 +97,32 @@ val AF_SPEEDS = listOf(AF_SPEED_NORMAL, AF_SPEED_FAST)
 // camera mette a fuoco dietro di esso.
 val AF_WINDOW_CENTER = listOf(0.3, 0.3, 0.4, 0.4)
 
+// Dimensione della finestra in percentuale del lato del fotogramma, regolabile con i
+// +/- a passi di AF_WINDOW_STEP. 100 = fotogramma intero (lista vuota). Sotto il 20% il
+// riquadro contiene troppo poco dettaglio e la misura di contrasto diventa rumorosa.
+const val AF_WINDOW_FULL = 100
+const val AF_WINDOW_MIN = 20
+const val AF_WINDOW_STEP = 10
+
+// Riquadro centrato di lato 'percent' come [x, y, w, h] in frazioni del fotogramma.
+// Arrotondato a 3 decimali: (1 - 0.7) / 2 in binario non e' 0.15 esatto, e quel
+// rumore finirebbe nel JSON spedito al plugin.
+fun afWindowForSize(percent: Int): List<Double> {
+    if (percent >= AF_WINDOW_FULL) return emptyList()
+    val side = percent / 100.0
+    val offset = Math.round((1.0 - side) / 2.0 * 1000.0) / 1000.0
+    return listOf(offset, offset, side, side)
+}
+
+// Inverso di afWindowForSize: la dimensione e' il lato maggiore del riquadro. Una
+// finestra non centrata (impostata da altri client) viene letta per la sola
+// dimensione; al primo +/- torna centrata.
+fun afWindowSize(window: List<Double>?): Int? = when {
+    window == null -> null
+    window.size < 4 -> AF_WINDOW_FULL
+    else -> Math.round(maxOf(window[2], window[3]) * 100.0).toInt().coerceIn(1, AF_WINDOW_FULL)
+}
+
 // Etichette per pulsanti da 56dp: dicono lo STATO corrente, non l'azione del tap.
 fun afRangeLabel(range: String?): String = when (range) {
     AF_RANGE_MACRO -> "MACRO"
@@ -116,11 +137,10 @@ fun afSpeedLabel(speed: String?): String = when (speed) {
     else -> "--"
 }
 
-// Lista vuota = fotogramma intero; null = parametro non supportato dal device.
-fun afWindowLabel(window: List<Double>?): String = when {
-    window == null -> "--"
-    window.isEmpty() -> "PIENO"
-    else -> "CENTRO"
+// Lista vuota = fotogramma intero; null = impostazioni non ancora lette dal server.
+fun afWindowLabel(window: List<Double>?): String {
+    val size = afWindowSize(window) ?: return "--"
+    return if (size >= AF_WINDOW_FULL) "PIENO" else "$size%"
 }
 
 // Nomi estesi per il toast di conferma: su un pulsante cosi' piccolo la sigla da sola
@@ -139,10 +159,10 @@ fun afSpeedDescription(speed: String?): String = when (speed) {
     else -> "Velocita' di aggancio sconosciuta"
 }
 
-fun afWindowDescription(window: List<Double>?): String = when {
-    window == null -> "Finestra di fuoco sconosciuta"
-    window.isEmpty() -> "Fuoco su tutto il fotogramma"
-    else -> "Fuoco sul riquadro centrale"
+fun afWindowDescription(window: List<Double>?): String {
+    val size = afWindowSize(window) ?: return "Finestra di fuoco sconosciuta"
+    return if (size >= AF_WINDOW_FULL) "Fuoco su tutto il fotogramma"
+    else "Fuoco sul riquadro centrale ($size%)"
 }
 
 

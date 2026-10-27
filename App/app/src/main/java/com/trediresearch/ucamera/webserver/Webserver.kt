@@ -444,9 +444,8 @@ class Webserver {
     //
     // range/speed/window sono opzionali e governano COME la camera cerca il fuoco:
     // contano solo in afs/afc, in manuale libcamera li ignora. Si inviano solo quelli
-    // valorizzati, cosi' un plugin vecchio che non li conosce riceve esattamente la
-    // richiesta di prima. Attenzione: 'mode' e' obbligatorio lato server, quindi per
-    // cambiare il solo range va comunque rimandato il modo corrente - e se quel modo e'
+    // valorizzati: un cambio di range non rispedisce velocita' e finestra. Attenzione:
+    // 'mode' e' obbligatorio lato server, quindi per cambiare il solo range va comunque rimandato il modo corrente - e se quel modo e'
     // "afs" il server rilancia un ciclo one-shot, che qui e' il comportamento voluto
     // (si rimette a fuoco con i parametri appena cambiati).
     fun setFocusMode(
@@ -470,30 +469,11 @@ class Webserver {
             if (sessionResponse != null && sessionResponse.status == "success") {
                 return CommandResult(true, sessionResponse.messagesOrEmpty())
             }
-            // Device non ancora aggiornato: il plugin vecchio conosce solo "autofocus" e
-            // risponde errore a focus_mode. Il one-shot resta ottenibile, gli altri modi no.
-            // Il ripiego vale solo per il comando "nudo": se erano stati chiesti anche
-            // range/velocita'/finestra, 'autofocus' li ignorerebbe e riporteremmo un
-            // successo per qualcosa che non e' stato applicato.
-            if (mode == FOCUS_SINGLE && range == null && speed == null && window == null) {
-                Log.w(TAG, "setFocusMode: focus_mode rifiutato, ritento con il vecchio 'autofocus'")
-                if (triggerLegacyAutofocus()) return CommandResult(true)
-            }
             return CommandResult(false, sessionResponse.messagesOrEmpty())
         } catch (e: Exception) {
             Log.e(TAG, "setFocusMode: " + e.message.toString())
         }
         return CommandResult(false)
-    }
-
-    private fun triggerLegacyAutofocus(): Boolean {
-        return try {
-            val resp = apiservice.execCameraCommand(ExecCommandRequest("autofocus")).execute()
-            resp.body()?.status == "success"
-        } catch (e: Exception) {
-            Log.e(TAG, "triggerLegacyAutofocus: " + e.message.toString())
-            false
-        }
     }
 
     fun startVideo(dataset: dataset): Int {

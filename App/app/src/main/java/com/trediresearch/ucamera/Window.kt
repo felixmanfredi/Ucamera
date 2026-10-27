@@ -43,18 +43,21 @@ import android.view.TextureView
 import com.trediresearch.ucamera.video.SerialPortConnection
 import com.trediresearch.ucamera.webserver.AF_RANGES
 import com.trediresearch.ucamera.webserver.AF_SPEEDS
-import com.trediresearch.ucamera.webserver.AF_WINDOW_CENTER
+import com.trediresearch.ucamera.webserver.AF_WINDOW_FULL
+import com.trediresearch.ucamera.webserver.AF_WINDOW_MIN
+import com.trediresearch.ucamera.webserver.AF_WINDOW_STEP
 import com.trediresearch.ucamera.webserver.CaptureResult
 import com.trediresearch.ucamera.webserver.FOCUS_MANUAL
 import com.trediresearch.ucamera.webserver.FOCUS_MODES
-import com.trediresearch.ucamera.webserver.FOCUS_SINGLE
 import com.trediresearch.ucamera.webserver.Webserver
 import com.trediresearch.ucamera.webserver.afRangeDescription
 import com.trediresearch.ucamera.webserver.afRangeLabel
 import com.trediresearch.ucamera.webserver.afSpeedDescription
 import com.trediresearch.ucamera.webserver.afSpeedLabel
 import com.trediresearch.ucamera.webserver.afWindowDescription
+import com.trediresearch.ucamera.webserver.afWindowForSize
 import com.trediresearch.ucamera.webserver.afWindowLabel
+import com.trediresearch.ucamera.webserver.afWindowSize
 import com.trediresearch.ucamera.webserver.dataset
 import com.trediresearch.ucamera.webserver.focusModeDescription
 import com.trediresearch.ucamera.webserver.focusModeLabel
@@ -135,6 +138,7 @@ class Window(private val context: Context) {
     lateinit var af_search_group:LinearLayout;
     lateinit var afrange_control:FrameLayout;
     lateinit var afspeed_control:FrameLayout;
+    lateinit var afwindow_control:FrameLayout;
     lateinit var interval_control:FrameLayout;
     lateinit var gain_control:FrameLayout;
     lateinit var btn_start_acquisition:Button;
@@ -144,7 +148,6 @@ class Window(private val context: Context) {
     lateinit var btn_collapse:Button
     lateinit var btn_fullscreen:Button
     lateinit var btn_autofocus:Button
-    lateinit var btn_afwindow:Button
     lateinit var btn_ae:Button
     lateinit var btn_reset_settings:Button
     lateinit var preview_container:View
@@ -317,6 +320,7 @@ class Window(private val context: Context) {
         af_search_group = rootView.findViewById(R.id.af_search_group) as LinearLayout
         afrange_control = rootView.findViewById(R.id.afrange_control) as FrameLayout
         afspeed_control = rootView.findViewById(R.id.afspeed_control) as FrameLayout
+        afwindow_control = rootView.findViewById(R.id.afwindow_control) as FrameLayout
         interval_control = rootView.findViewById(R.id.interval_control) as FrameLayout
         gain_control = rootView.findViewById(R.id.gain_control) as FrameLayout
         recording= rootView.findViewById(R.id.recording) as ImageView
@@ -332,7 +336,6 @@ class Window(private val context: Context) {
         btn_collapse=rootView.findViewById(R.id.btn_collapse) as Button
         btn_fullscreen=rootView.findViewById(R.id.btn_fullscreen) as Button
         btn_autofocus=rootView.findViewById(R.id.btn_autofocus) as Button
-        btn_afwindow=rootView.findViewById(R.id.btn_afwindow) as Button
         btn_ae=rootView.findViewById(R.id.btn_ae) as Button
         btn_reset_settings=rootView.findViewById(R.id.btn_reset_settings) as Button
         preview_container=rootView.findViewById(R.id.preview_container) as View
@@ -383,6 +386,7 @@ class Window(private val context: Context) {
         exposuretime_control.findViewById<TextView>(R.id.label).text="Tempo di esposizione"
         afrange_control.findViewById<TextView>(R.id.label).text="Ricerca fuoco"
         afspeed_control.findViewById<TextView>(R.id.label).text="Velocita' AF"
+        afwindow_control.findViewById<TextView>(R.id.label).text="Finestra AF"
         // "Esposizione" e "Fuoco" hanno l'etichetta dinamica: ci finisce anche la
         // modalita' corrente, vedi updateControlsEnabled().
         interval_control.findViewById<TextView>(R.id.label).text="Intervallo scatto (s)"
@@ -407,7 +411,9 @@ class Window(private val context: Context) {
         bindDoubleParam(contrast_control, 0.0, 32.0, 1.0, { settings.contrast }) { settings.contrast = it }
         bindDoubleParam(sharpness_control, 0.0, 16.0, 1.0, { settings.sharpness }) { settings.sharpness = it }
         bindDoubleParam(saturation_control, 0.0, 32.0, 1.0, { settings.saturation }) { settings.saturation = it }
-        bindDoubleParam(lensposition_control, 0.0, 32.0, 1.0, { settings.lensposition }) { settings.lensposition = it }
+        // LensPosition per libcamera e' in diottrie, 0.0 (infinito) .. 15.0 (tuning
+        // Hawkeye 64MP). Il passo di 1 era troppo grosso: in acqua 1 D ~ 1.33 m.
+        bindDoubleParam(lensposition_control, 0.0, 15.0, 0.1, { settings.lensposition }) { settings.lensposition = it }
 
         // Guadagno analogico, mostrato come "ISO" (gain x 100). Il minimo e' 1.0, non 0:
         // AnalogueGain = 0 non e' valido, e il plugin scrive il valore nel proprio
@@ -452,12 +458,8 @@ class Window(private val context: Context) {
         afspeed_control.findViewById<Button>(R.id.btn_plus).setOnClickListener { stepAfSpeed(+1) }
         afspeed_control.findViewById<Button>(R.id.btn_minus).setOnClickListener { stepAfSpeed(-1) }
 
-        btn_afwindow.setOnClickListener {
-            val current = settings.afwindow ?: return@setOnClickListener
-            // Due soli stati: tutto il fotogramma oppure il riquadro centrale.
-            val next = if (current.isEmpty()) AF_WINDOW_CENTER else emptyList()
-            applyFocusParams(window = next, describe = { afWindowDescription(it.afwindow) })
-        }
+        afwindow_control.findViewById<Button>(R.id.btn_plus).setOnClickListener { stepAfWindow(+1) }
+        afwindow_control.findViewById<Button>(R.id.btn_minus).setOnClickListener { stepAfWindow(-1) }
 
         // L'intervallo e' locale all'app (va in dataset.interval all'avvio), non e' una
         // impostazione della camera: non dipende da settingsLoaded ne' passa da setSettings.
@@ -554,17 +556,31 @@ class Window(private val context: Context) {
         // PUT /camera/settings), a differenza del fuoco che passa da exec.
         btn_ae.setOnClickListener{
             if (!canEditSettings()) return@setOnClickListener
-            settings.aeenable = !settings.aeenable
-            setSettings()
+            // Stesso debounce del modo di fuoco: il tap cambia solo la scritta, l'invio
+            // parte FOCUS_MODE_DEBOUNCE_MS dopo l'ultimo tap e solo se lo stato scelto
+            // differisce da quello attuale.
+            pendingAeEnable = !(pendingAeEnable ?: settings.aeenable)
+            updateControlsEnabled()
+            focusModeDebounceHandler.removeCallbacks(sendPendingAeEnable)
+            focusModeDebounceHandler.postDelayed(sendPendingAeEnable, FOCUS_MODE_DEBOUNCE_MS)
         }
 
         btn_autofocus.setOnClickListener{
-            if (!settingsLoaded) return@setOnClickListener
+            if (!settingsLoaded || focusModeInFlight || afParamsInFlight || settingsPutsInFlight > 0) return@setOnClickListener
             // Ciclo semplice e prevedibile. Atterrare su "afs" fa partire il one-shot;
             // per rifarlo si gira di nuovo. Niente scorciatoie nascoste su un pulsante
             // da 18dp che deve restare leggibile a colpo d'occhio.
-            val current = FOCUS_MODES.indexOf(settings.afmode).let { if (it < 0) 0 else it }
-            applyFocusMode(FOCUS_MODES[(current + 1) % FOCUS_MODES.size])
+            // Si parte dal modo attivo (riletto dal server anche dopo un cambio fallito,
+            // quindi un tentativo non riuscito non fa avanzare il ciclo), o da quello gia'
+            // selezionato e non ancora inviato.
+            val base = pendingFocusMode ?: settings.afmode
+            val current = FOCUS_MODES.indexOf(base).let { if (it < 0) 0 else it }
+            pendingFocusMode = FOCUS_MODES[(current + 1) % FOCUS_MODES.size]
+            updateControlsEnabled()
+            // Ogni tap fa ripartire l'attesa: passare da MF ad AF-C attraversa AF-S, e
+            // senza attesa partirebbe un one-shot (bloccante) che nessuno ha chiesto.
+            focusModeDebounceHandler.removeCallbacks(sendPendingFocusMode)
+            focusModeDebounceHandler.postDelayed(sendPendingFocusMode, FOCUS_MODE_DEBOUNCE_MS)
         }
 
 
@@ -692,12 +708,14 @@ class Window(private val context: Context) {
         // subito senza aspettare la conferma di rete (che puo' impiegare diversi
         // secondi sul bridge seriale/radio) - altrimenti il testo a schermo resta
         // "congelato" sul vecchio valore per tutta la durata del giro di rete.
+        settingsPutsInFlight++
         updateValues()
         // api.setSettings() e' una chiamata sincrona sul bridge seriale: fuori dal
         // main thread per evitare ANR (chiamata da moltissimi listener +/-).
         Thread {
             val result = api.setSettings(settings)
             Handler(Looper.getMainLooper()).post {
+                settingsPutsInFlight--
                 updateValues()
                 // Il server risponde "success" anche quando scarta una chiave, e il motivo
                 // vero sta solo nell'array "message" (es. "Unsupported changes to gain
@@ -721,7 +739,16 @@ class Window(private val context: Context) {
     // di sensato da incrementare), e il server rifiuta qualunque PUT durante la
     // registrazione ("Cannot Set Settings during recording!"), quindi in acquisizione i
     // tap produrrebbero solo errori.
-    private fun canEditSettings() = settingsLoaded && !onAcquisition
+    // In piu': il PUT rispedisce l'oggetto intero, afmode e parametri AF compresi, quindi
+    // non deve partire mentre un comando di fuoco e' in volo (riporterebbe il modo
+    // vecchio), ne' durante un cambio AUTO/MAN.
+    private fun canEditSettings() = settingsLoaded && !onAcquisition &&
+            !aeInFlight && !focusModeInFlight && !afParamsInFlight
+
+    // PUT /camera/settings ancora senza risposta. Finche' ce n'e' uno, modo e parametri
+    // di fuoco restano bloccati: il PUT porta con se' l'afmode letto prima, e arrivando
+    // dopo il comando di fuoco lo annullerebbe.
+    private var settingsPutsInFlight = 0
 
     // Aggancia i due pulsanti +/- di un controllo a un parametro Double con il suo
     // intervallo valido. Il clamp sta qui, in un punto solo: prima ogni coppia di
@@ -786,7 +813,7 @@ class Window(private val context: Context) {
         delta: Int,
         apply: (String) -> Unit,
     ) {
-        if (!settingsLoaded || current == null) return
+        if (!afParamsEditable() || current == null) return
         val i = values.indexOf(current)
         if (i < 0) {
             Log.w("UCamera", "valore di fuoco sconosciuto dal server: $current")
@@ -808,6 +835,18 @@ class Window(private val context: Context) {
             applyFocusParams(speed = value, describe = { afSpeedDescription(it.afspeed) })
         }
 
+    // Il '+' allarga il riquadro centrale, il '-' lo stringe. Il valore corrente si
+    // aggancia prima al multiplo del passo piu' vicino: una finestra impostata da altri
+    // (es. 35%) non deve far avanzare a scalini sfalsati.
+    private fun stepAfWindow(delta: Int) {
+        if (!afParamsEditable()) return
+        val current = afWindowSize(settings.afwindow) ?: return
+        val snapped = Math.round(current.toDouble() / AF_WINDOW_STEP).toInt() * AF_WINDOW_STEP
+        val next = (snapped + delta * AF_WINDOW_STEP).coerceIn(AF_WINDOW_MIN, AF_WINDOW_FULL)
+        if (next == current) return // fondo scala: no-op, niente giro di rete
+        applyFocusParams(window = afWindowForSize(next), describe = { afWindowDescription(it.afwindow) })
+    }
+
     // Cambia un parametro della ricerca lasciando invariato il modo. Il modo va comunque
     // rispedito perche' il server lo pretende, e per questo il gruppo e' nascosto in
     // manuale: rimandare "manual" non applicherebbe nulla, e rimandare "afs" rilancia un
@@ -822,7 +861,8 @@ class Window(private val context: Context) {
         window: List<Double>? = null,
         describe: (settings) -> String,
     ) {
-        setAfSearchEnabled(false)
+        afParamsInFlight = true
+        updateControlsEnabled()
         val mode = settings.afmode
         Thread {
             val result = api.setFocusMode(mode, range, speed, window)
@@ -833,6 +873,7 @@ class Window(private val context: Context) {
                 try { api.getSettings() } catch (e: java.net.ConnectException) { null }
             } else null
             Handler(Looper.getMainLooper()).post {
+                afParamsInFlight = false
                 if (result.ok) {
                     if (refreshed != null) {
                         settings = refreshed
@@ -858,33 +899,149 @@ class Window(private val context: Context) {
         }.start()
     }
 
-    private fun setAfSearchEnabled(enabled: Boolean) {
-        setParamEnabled(afrange_control, enabled)
-        setParamEnabled(afspeed_control, enabled)
-        btn_afwindow.isEnabled = enabled
+    // Vero mentre un cambio AUTO/MAN dell'esposizione e' in volo.
+    private var aeInFlight = false
+
+    // Stato AUTO/MAN scelto con il tasto ma non ancora inviato (vedi btn_ae).
+    private var pendingAeEnable: Boolean? = null
+
+    private val sendPendingAeEnable: Runnable = Runnable {
+        val enable = pendingAeEnable ?: return@Runnable
+        if (!settingsLoaded || onAcquisition) {
+            // In acquisizione il server rifiuta il PUT: la scelta si scarta invece di
+            // restare in coda e partire minuti dopo, a fine acquisizione.
+            pendingAeEnable = null
+            updateControlsEnabled()
+            return@Runnable
+        }
+        if (!canEditSettings() || settingsPutsInFlight > 0) {
+            // Un altro PUT o un comando di fuoco e' ancora in volo: si riprova dopo,
+            // invece di accodare un PUT che porterebbe valori vecchi.
+            focusModeDebounceHandler.postDelayed(sendPendingAeEnable, FOCUS_MODE_DEBOUNCE_MS)
+            return@Runnable
+        }
+        pendingAeEnable = null
+        if (enable == settings.aeenable) {
+            updateControlsEnabled() // tornati allo stato di partenza: niente da inviare
+            return@Runnable
+        }
+        applyAeEnable(enable)
+    }
+
+    // Cambio AUTO/MAN dell'esposizione. Passa da PUT /camera/settings come gli altri
+    // parametri, ma non puo' usare la verifica generica di setSettings(): al passaggio
+    // in manuale la camera parte dal tempo e dal guadagno che l'AE stava usando, quindi
+    // la rilettura non coincide con i valori locali (vecchi) anche se il cambio e'
+    // riuscito, e compariva "Errore durante la modifica" in ritardo. Qui l'esito si
+    // giudica dal solo aeenable riletto, e il pannello prende tempo/ISO dal server -
+    // altrimenti il primo +/- rispedirebbe i valori vecchi.
+    private fun applyAeEnable(enable: Boolean) {
+        settings.aeenable = enable
+        aeInFlight = true
+        settingsPutsInFlight++
+        updateValues()
+        val requested = settings.copy()
+        Thread {
+            val result = api.setSettings(requested)
+            val refreshed = try { api.getSettings() } catch (e: java.net.ConnectException) { null }
+            Handler(Looper.getMainLooper()).post {
+                aeInFlight = false
+                settingsPutsInFlight--
+                if (refreshed != null) {
+                    settings = refreshed
+                    settingsLoaded = true
+                } else if (!result.ok) {
+                    // Ne' conferma ne' rilettura: si torna allo stato di prima invece di
+                    // mostrare come attivo un cambio che non risulta applicato.
+                    settings.aeenable = !enable
+                }
+                updateValues()
+                val applied = if (refreshed != null) refreshed.aeenable == enable else result.ok
+                val msg = result.message
+                if (!applied) {
+                    Toast.makeText(App.activity,
+                        msg ?: "Cambio esposizione automatica non riuscito",
+                        Toast.LENGTH_LONG).show()
+                } else if (msg != null) {
+                    Toast.makeText(App.activity, msg, Toast.LENGTH_LONG).show()
+                }
+            }
+        }.start()
+    }
+
+    // Vero mentre un cambio di range/velocita'/finestra e' in volo.
+    private var afParamsInFlight = false
+
+    // I parametri di ricerca e il modo viaggiano nello STESSO comando (focus_mode, con
+    // il modo sempre rispedito) e il lock del bridge non garantisce l'ordine di arrivo:
+    // un parametro inviato durante un cambio di modo si porterebbe dietro il modo
+    // vecchio e potrebbe annullare quello nuovo. Per questo i due si escludono: niente
+    // parametri mentre un cambio di modo e' in attesa o in volo, e viceversa.
+    private fun afParamsEditable() =
+        settingsLoaded && !focusModeInFlight && pendingFocusMode == null && !afParamsInFlight &&
+                settingsPutsInFlight == 0
+
+    // Vero mentre un cambio di modo e' in volo: il polling di stato richiama
+    // updateControlsEnabled() e senza questo riattiverebbe il tasto a meta' attesa.
+    private var focusModeInFlight = false
+
+    // Modo scelto con il pulsante ma non ancora inviato: si spedisce solo dopo
+    // FOCUS_MODE_DEBOUNCE_MS dall'ultimo tap, cosi' una serie di tap rapidi produce un
+    // solo comando (quello finale) invece di una transizione per ogni passaggio.
+    private var pendingFocusMode: String? = null
+    private val focusModeDebounceHandler = Handler(Looper.getMainLooper())
+    private val FOCUS_MODE_DEBOUNCE_MS = 1000L
+
+    private val sendPendingFocusMode: Runnable = Runnable {
+        val mode = pendingFocusMode ?: return@Runnable
+        if (settingsPutsInFlight > 0 || afParamsInFlight) {
+            // Un PUT dei settings o un parametro AF e' ancora in volo e porta il modo
+            // vecchio: si aspetta che finisca, altrimenti potrebbe annullare questo.
+            focusModeDebounceHandler.postDelayed(sendPendingFocusMode, FOCUS_MODE_DEBOUNCE_MS)
+            return@Runnable
+        }
+        pendingFocusMode = null
+        if (mode == settings.afmode) {
+            // Giro completo dei modi: si e' tornati al punto di partenza, niente da inviare.
+            updateControlsEnabled()
+            return@Runnable
+        }
+        applyFocusMode(mode)
     }
 
     // Cambio di modalita' di fuoco. Passa da PUT /camera/exec e non dai settings, quindi
     // resta possibile anche durante l'acquisizione (a differenza di tutto il resto).
     private fun applyFocusMode(mode: String) {
-        btn_autofocus.isEnabled = false
+        // In AF-S il plugin risponde solo a ciclo di messa a fuoco concluso
+        // (autofocus_cycle(wait=True)): l'attesa col tasto grigio e' normale.
+        focusModeInFlight = true
+        updateControlsEnabled()
+        val previous = settings.afmode
         Thread {
             val result = api.setFocusMode(mode)
             // Il plugin aggiorna lensposition dai metadati quando entra in manual o
             // dopo un one-shot: senza rilettura il pannello mostrerebbe il valore vecchio.
-            val refreshed = if (result.ok) {
-                try { api.getSettings() } catch (e: java.net.ConnectException) { null }
-            } else null
+            // Si rilegge anche dopo un errore: un AF-S fallito puo' aver comunque
+            // cambiato modo o mosso la lente, e il pannello deve dire lo stato vero.
+            var refreshed = try { api.getSettings() } catch (e: java.net.ConnectException) { null }
+            // Un cambio fallito deve lasciare la camera nel modo di partenza (es. MF ->
+            // AF-S che non trova il fuoco -> resta MF). Se il plugin e' rimasto nel modo
+            // chiesto, lo si riporta indietro esplicitamente.
+            if (!result.ok && refreshed != null && refreshed.afmode != previous) {
+                Log.w("UCamera", "focus_mode $mode fallito ma il server e' in ${refreshed.afmode}: ripristino $previous")
+                api.setFocusMode(previous)
+                refreshed = try { api.getSettings() } catch (e: java.net.ConnectException) { null }
+            }
             Handler(Looper.getMainLooper()).post {
-                btn_autofocus.isEnabled = settingsLoaded
+                focusModeInFlight = false
+                if (refreshed != null) {
+                    settings = refreshed
+                    settingsLoaded = true
+                } else if (result.ok) {
+                    settings.afmode = mode
+                }
+                updateValues()
                 if (result.ok) {
-                    if (refreshed != null) {
-                        settings = refreshed
-                        settingsLoaded = true
-                    } else {
-                        settings.afmode = mode
-                    }
-                    updateValues()
                     // Su un pulsante da 40dp la sigla da sola non basta a capire cosa si
                     // e' appena attivato: il nome esteso lo dice senza ambiguita'.
                     Toast.makeText(App.activity,
@@ -921,14 +1078,12 @@ class Window(private val context: Context) {
 
         gain_control.findViewById<TextView>(R.id.value).text=paramValueFormat.format((settings.gain*100))
 
-        btn_ae.text = if (settings.aeenable) "AUTO" else "MAN"
-
         // Parametri della ricerca. Le etichette si scrivono sempre, anche quando il
         // gruppo e' nascosto: cosi' al passaggio in AF-S/AF-C compare gia' valorizzato
         // invece di mostrare per un istante il "--" del layout.
         afrange_control.findViewById<TextView>(R.id.value).text = afRangeLabel(settings.afrange)
         afspeed_control.findViewById<TextView>(R.id.value).text = afSpeedLabel(settings.afspeed)
-        btn_afwindow.text = afWindowLabel(settings.afwindow)
+        afwindow_control.findViewById<TextView>(R.id.value).text = afWindowLabel(settings.afwindow)
 
         updateControlsEnabled()
     }
@@ -949,23 +1104,17 @@ class Window(private val context: Context) {
         setParamEnabled(lensposition_control, editable && settings.afmode == FOCUS_MANUAL)
 
         // Esatto speculare di "Fuoco": la posizione della lente conta solo in manuale, i
-        // parametri della RICERCA solo quando e' la camera a cercare. Qui pero' il
-        // gruppo si nasconde invece di attenuarsi, per due motivi: in manuale non c'e'
-        // nulla da spiegare (non e' il caso dei +/- spenti, che vanno giustificati), e
-        // su un device con il plugin vecchio quei parametri non esistono proprio - null
-        // vuol dire che il server non li ha mai mandati, e mostrarli attenuati
-        // suggerirebbe che basti cambiare modo per averli.
-        val afSearchSupported = settings.afrange != null || settings.afspeed != null ||
-                settings.afwindow != null
+        // parametri della RICERCA solo quando e' la camera a cercare. In manuale il
+        // gruppo si nasconde invece di attenuarsi: non c'e' nulla da spiegare.
         val afSearching = settings.afmode != FOCUS_MANUAL
         af_search_group.visibility =
-            if (settingsLoaded && afSearchSupported && afSearching) View.VISIBLE else View.GONE
+            if (settingsLoaded && afSearching) View.VISIBLE else View.GONE
         // Passano da exec come il modo di fuoco, quindi restano disponibili in
-        // acquisizione: la condizione e' settingsLoaded, non 'editable'. Ogni singolo
-        // controllo si spegne comunque se il device non espone QUEL parametro.
-        setParamEnabled(afrange_control, settingsLoaded && settings.afrange != null)
-        setParamEnabled(afspeed_control, settingsLoaded && settings.afspeed != null)
-        btn_afwindow.isEnabled = settingsLoaded && settings.afwindow != null
+        // acquisizione: la condizione non dipende da 'editable'.
+        val afParams = afParamsEditable()
+        setParamEnabled(afrange_control, afParams)
+        setParamEnabled(afspeed_control, afParams)
+        setParamEnabled(afwindow_control, afParams)
 
         // I due gruppi dell'esposizione si escludono, perche' libcamera li tratta cosi':
         // con AE attivo l'AGC riscrive tempo e guadagno a ogni frame (e i relativi
@@ -976,6 +1125,14 @@ class Window(private val context: Context) {
         setParamEnabled(exposuretime_control, editable && !settings.aeenable)
         setParamEnabled(gain_control, editable && !settings.aeenable)
         btn_ae.isEnabled = editable
+        // Scritto qui (non in updateValues) per lo stesso motivo del tasto del fuoco:
+        // il polling richiama updateControlsEnabled() e deve rispettare "..." e la
+        // selezione in attesa di invio.
+        btn_ae.text = when {
+            aeInFlight -> "..."
+            pendingAeEnable != null -> if (pendingAeEnable == true) "AUTO" else "MAN"
+            else -> if (settings.aeenable) "AUTO" else "MAN"
+        }
 
         // La sigla sui pulsanti si legge come azione ("premi per fare AF-C"), non come
         // stato. L'indicazione di come e' impostato ADESSO sta quindi nelle etichette,
@@ -988,12 +1145,20 @@ class Window(private val context: Context) {
         exposure_control.findViewById<TextView>(R.id.label).text = "Esposizione · $aeTag"
 
         // Il fuoco passa da exec, non dai settings: resta disponibile in acquisizione.
-        btn_autofocus.isEnabled = settingsLoaded
+        btn_autofocus.isEnabled = settingsLoaded && !focusModeInFlight && !afParamsInFlight &&
+                settingsPutsInFlight == 0
         // Il modo corrente sul pulsante va scritto QUI e non in updateValues(), che esce
         // in anticipo finche' le impostazioni non sono arrivate: in quel caso restava il
         // testo del layout, che sembrava uno stato ("AF") senza esserlo. Serve anche a
         // capire perche' i +/- di "Fuoco" non rispondono: sono onorati solo in manuale.
-        btn_autofocus.text = if (settingsLoaded) focusModeLabel(settings.afmode) else "--"
+        btn_autofocus.text = when {
+            focusModeInFlight -> "..."
+            // Selezione in attesa di invio: si mostra subito, cosi' si vede dove si e'
+            // arrivati con i tap.
+            pendingFocusMode != null -> focusModeLabel(pendingFocusMode!!)
+            settingsLoaded -> focusModeLabel(settings.afmode)
+            else -> "--"
+        }
         btn_reset_settings.isEnabled = editable
         btn_preview_image.isEnabled = settingsLoaded && !onAcquisition
     }
@@ -1086,6 +1251,13 @@ class Window(private val context: Context) {
     // gli altri, lasciando aperti polling, delegate seriali e la porta stessa.
     fun close() {
         runQuietly("stopStatusPolling") { stopStatusPolling() }
+        // Un cambio di modo ancora in attesa non deve partire su un api gia' chiuso.
+        runQuietly("focusModeDebounce") {
+            focusModeDebounceHandler.removeCallbacks(sendPendingFocusMode)
+            focusModeDebounceHandler.removeCallbacks(sendPendingAeEnable)
+            pendingFocusMode = null
+            pendingAeEnable = null
+        }
         runQuietly("stopPreview") { stopPreview() }
         runQuietly("api.shutdown") { if (::api.isInitialized) api.shutdown() }
         runQuietly("serialPort.close") { serialPort?.closeConnection(); serialPort = null }
