@@ -7,6 +7,8 @@ import retrofit2.http.GET
 import retrofit2.http.Headers
 import retrofit2.http.POST
 import retrofit2.http.PUT
+import retrofit2.http.Path
+import retrofit2.http.Query
 enum class ConverterFormat {
     XML,
     JSON
@@ -41,7 +43,7 @@ interface WebserverApi {
     fun capture(@Body body: CaptureRequest): Call<ResponseBody>
 
 
-    // X-Poll-Timeout: usata solo dal polling periodico (Window.statusPollRunnable) -
+    // X-Poll-Timeout: usata solo dal polling periodico (status.PollingStatusSource) -
     // timeout piu' corto del default (vedi SerialTransportInterceptor.POLL_TIMEOUT_HEADER)
     // cosi' un ciclo lento/perso non tiene il lock di SerialBridge bloccando azioni
     // interattive dell'utente (es. cambio impostazioni) per 20s dietro di se'.
@@ -51,8 +53,16 @@ interface WebserverApi {
     @ResponseFormat("application/json")
     fun getDatasets():Call<response<List<DatasetInfo>>>
 
-    // Rotta custom (non presente nel firmware/webserver vendor originale) aggiunta
-    // sul device per esporre l'ultimo fix GPS/altimetro via REST - vedi LocationInfo.
+    // Stato di un singolo dataset. locations=false evita location_history, che cresce
+    // a ogni fix durante l'acquisizione (vedi mpe-server docs/wiki/API-REST.md).
+    @Headers("X-Poll-Timeout: 6000")
+    @GET("datasets/{id}/info")
+    @RequestFormat(ConverterFormat.JSON)
+    @ResponseFormat("application/json")
+    fun getDatasetInfo(@Path("id") datasetId: Int, @Query("locations") locations: Boolean): Call<response<DatasetInfo>>
+
+    // Ultimo fix GPS/altimetro via REST (stesso contenuto dell'evento Socket.IO
+    // location_status) - vedi LocationInfo.
     @Headers("X-Poll-Timeout: 6000")
     @GET("location_system/status")
     @RequestFormat(ConverterFormat.JSON)

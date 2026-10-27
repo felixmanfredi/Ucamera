@@ -6,6 +6,7 @@ import android.graphics.BitmapFactory
 import android.util.Log
 import com.google.gson.GsonBuilder
 import com.trediresearch.ucamera.App
+import com.trediresearch.ucamera.status.StatusApi
 import com.trediresearch.ucamera.video.SerialPortConnection
 import okhttp3.OkHttpClient
 import okhttp3.RequestBody
@@ -61,7 +62,7 @@ data class CaptureResult(
     }
 }
 
-class Webserver {
+class Webserver : StatusApi {
 
     companion object {
         // Sentinel per startDataset()/startVideo(): il server ha rifiutato l'avvio
@@ -70,10 +71,9 @@ class Webserver {
         const val ALREADY_RUNNING = -2
 
         // Dopo questi errori consecutivi su GET /location_system/status il polling della
-        // profondita' si disattiva da solo: quella rotta NON e' esposta dal server (i dati
-        // di posizione viaggiano su Socket.IO/TCP, che richiedono un percorso IP vero), e
-        // continuare a interrogarla brucia uno slot del bridge seriale ogni 5 secondi per
-        // un 404. Se invece sul device la rotta custom c'e' davvero, il polling prosegue.
+        // profondita' si disattiva da solo: le versioni di mpe-server precedenti alla rotta
+        // ufficiale non la espongono, e continuare a interrogarla brucerebbe uno slot del
+        // bridge seriale per un 404 a ogni giro.
         private const val DEPTH_FAILURES_BEFORE_DISABLE = 3
     }
 
@@ -330,9 +330,10 @@ class Webserver {
     // Interroga il dataset piu' recente (id piu' alto): se non e' "completed" c'e'
     // un'acquisizione in corso. Usato sia per risincronizzare onAcquisition
     // all'avvio/riconnessione (anche se l'acquisizione e' stata avviata da un'altra
-    // sessione) sia dal polling periodico che sostituisce il device_status via
-    // Socket.IO (non raggiungibile sul solo bridge seriale/radio Skydroid).
-    fun getAcquisitionStatus(): AcquisitionStatus? {
+    // sessione) sia dal polling (status.PollingStatusSource) quando non c'e' ancora un
+    // dataset da seguire. Scarica l'elenco completo dei dataset: per seguire
+    // un'acquisizione nota usare getDatasetAcquisitionStatus().
+    override fun getAcquisitionStatus(): AcquisitionStatus? {
         try {
             val resp = apiservice.getDatasets().execute()
             val sessionResponse = resp.body()
@@ -349,10 +350,27 @@ class Webserver {
 
     fun isAcquisitionRunning(): Boolean = getAcquisitionStatus()?.running ?: false
 
+    // Stato di UN dataset noto via GET /datasets/{id}/info?locations=false: poche centinaia
+    // di byte invece dell'elenco di tutti i dataset. Con un mpe-server che non conosce il
+    // parametro "locations" la rotta funziona comunque, ma include location_history.
+    override fun getDatasetAcquisitionStatus(datasetId: Int): AcquisitionStatus? {
+        try {
+            val resp = apiservice.getDatasetInfo(datasetId, false).execute()
+            val sessionResponse = resp.body()
+            if (sessionResponse != null && sessionResponse.status == "success") {
+                val info = sessionResponse.dataOrEmpty().getOrNull(0) ?: return null
+                return AcquisitionStatus(!info.completed, info.dataset_id, info.items)
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "getDatasetAcquisitionStatus($datasetId): " + e.message.toString())
+        }
+        return null
+    }
+
     // Profondita' in metri (sotto il livello del mare, "BSL") dall'ultimo fix
     // altimetro - null se non c'e' ancora un fix o se il riferimento e' ASL (sopra
     // il livello del mare, non rilevante per il depth display).
-    fun getDepthMeters(): Double? {
+    override fun getDepthMeters(): Double? {
         if (!depthPollingEnabled) return null
         try {
             val resp = apiservice.getLocationStatus().execute()
@@ -376,8 +394,8 @@ class Webserver {
             depthPollingEnabled = false
             Log.w(
                 TAG, "getDepthMeters: disattivato dopo $depthFailures errori consecutivi " +
-                        "($reason). La rotta /location_system/status non e' esposta dal server: " +
-                        "la profondita' arriva solo via Socket.IO, che richiede un percorso IP."
+                        "($reason). Il server non espone /location_system/status (mpe-server non " +
+                        "aggiornato): la profondita' arriva solo via Socket.IO, che richiede un percorso IP."
             )
         }
     }

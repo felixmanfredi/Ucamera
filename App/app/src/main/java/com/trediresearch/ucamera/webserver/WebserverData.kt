@@ -186,7 +186,8 @@ data class dataset(
 data class CaptureRequest(
     @SerializedName("flash") val flash: Boolean = false)
 
-// Sottoinsieme minimo di GET /datasets/ - serve a Webserver.getAcquisitionStatus()/
+// Sottoinsieme minimo di GET /datasets/ e GET /datasets/{id}/info - serve a
+// Webserver.getAcquisitionStatus()/getDatasetAcquisitionStatus()/
 // isAcquisitionRunning() per sapere se un'acquisizione e' in corso (anche se avviata
 // da un'altra sessione) e mostrare "Dataset X Foto Y" (Gson ignora gli altri campi
 // della risposta, non serve mappare l'intero oggetto dataset).
@@ -205,10 +206,9 @@ data class AcquisitionStatus(
     val items: Int,
 )
 
-// GET /location_system/status - rotta custom (non vendor) aggiunta a
-// communication/webserver.py sul device per esporre l'ultimo fix GPS/altimetro via
-// REST, dato che il location_status via Socket.IO non e' raggiungibile sul solo
-// bridge seriale/radio Skydroid. Mappiamo solo altitude (usata per il depth display),
+// GET /location_system/status - ultimo fix GPS/altimetro via REST (rotta ufficiale di
+// mpe-server, stesso contenuto dell'evento Socket.IO location_status, che sul solo
+// bridge seriale/radio Skydroid non arriva). Mappiamo solo altitude (depth display),
 // Gson ignora latitude/longitude/timestamp che il server include comunque.
 data class AltitudeInfo(
     @SerializedName("value") val value: Double? = null,

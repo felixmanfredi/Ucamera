@@ -28,9 +28,11 @@ import android.widget.Toast
 import androidx.annotation.RequiresApi
 import com.trediresearch.ucamera.video.SerialH264Player
 import com.trediresearch.ucamera.video.SerialJpegPlayer
-import io.socket.client.Socket
-import io.socket.emitter.Emitter
-import org.json.JSONObject
+import com.trediresearch.ucamera.status.PollingStatusSource
+import com.trediresearch.ucamera.status.SocketIoStatusSource
+import com.trediresearch.ucamera.status.StatusCoordinator
+import com.trediresearch.ucamera.status.StatusListener
+import com.trediresearch.ucamera.webserver.AcquisitionStatus
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -76,17 +78,21 @@ class Window(private val context: Context) {
     // SERIAL_H264 (the original RTP/H264-over-serial path).
     var fpvPreviewMode = FpvPreviewMode.JPEG_SERIAL
     var onAcquisition=false;
-    // Polling periodico dello stato acquisizione (sostituisce device_status via
-    // Socket.IO, che richiede un vero percorso IP e non funziona sul solo bridge
-    // seriale/radio Skydroid) - vedi startStatusPolling()/stopStatusPolling().
-    private var statusPollingActive = false
+    // Stato della camera: eventi Socket.IO quando c'e' un percorso IP (Wi-Fi), polling
+    // REST solo quando manca (sotto sola radio Skydroid) - vedi startStatusUpdates() e
+    // il package status.
+    private var statusCoordinator: StatusCoordinator? = null
+    private var pollingStatus: PollingStatusSource? = null
+    // Lo stato Avvia/Ferma lo decidono gli esiti di start/stop: mentre un comando e' in
+    // volo, e per STATE_GRACE_MS dopo, lo stato riportato dal server viene ignorato
+    // (un device_status o un polling partiti prima del comando lo riporterebbero indietro).
+    @Volatile
+    private var remoteStateIgnoredUntil = 0L
     // Vero mentre uno scatto di prova e' in volo. Il polling salta il suo giro: sono due
     // round trip da fino a 6s ciascuno che terrebbero il lock di SerialBridge, mettendo
     // in coda la richiesta piu' fragile che abbiamo proprio quando conta.
     @Volatile
     private var captureInFlight = false
-    private val statusPollHandler = Handler(Looper.getMainLooper())
-    private val statusPollIntervalMs = 5000L
     val windowHeight=150
     val windowHeightMax=300
     val windowWidth=270
@@ -114,7 +120,6 @@ class Window(private val context: Context) {
     var settings: settings = settings()
     private var settingsLoaded = false
     lateinit var api: Webserver
-    lateinit var s: SocketIOConnection
 
     private val windowManager = context.getSystemService(Context.WINDOW_SERVICE) as WindowManager
     private val layoutInflater = context.getSystemService(Context.LAYOUT_INFLATER_SERVICE) as LayoutInflater
@@ -1250,7 +1255,7 @@ class Window(private val context: Context) {
     // fallimento del primo (p.es. removeView su una finestra gia' rimossa) saltava tutti
     // gli altri, lasciando aperti polling, delegate seriali e la porta stessa.
     fun close() {
-        runQuietly("stopStatusPolling") { stopStatusPolling() }
+        runQuietly("stopStatusUpdates") { stopStatusUpdates() }
         // Un cambio di modo ancora in attesa non deve partire su un api gia' chiuso.
         runQuietly("focusModeDebounce") {
             focusModeDebounceHandler.removeCallbacks(sendPendingFocusMode)
@@ -1342,11 +1347,13 @@ class Window(private val context: Context) {
        // Le chiamate api.* sono sincrone (Retrofit .execute()) e possono impiegare
        // diversi secondi sul bridge seriale/radio: girate su un thread apposito per
        // non bloccare il main thread (rischio ANR, vedi timeout SerialBridge).
+       remoteStateIgnoredUntil = Long.MAX_VALUE
        Thread {
          try {
            if(onAcquisition){
 
                if(api.stopDataset()) {
+                   pollingStatus?.trackDataset(null)
                    setAcquisitionState(false)
                }else{
                    // Fallito per davvero (isAcquisitionRunning() conferma ancora attiva,
@@ -1371,6 +1378,8 @@ class Window(private val context: Context) {
                        // ALREADY_RUNNING: il server ha gia' un'acquisizione aperta (es.
                        // risposta al primo tap persa sul bridge radio) - risincronizza lo
                        // stato locale invece di segnalare un errore che non e' reale.
+                       // Id sconosciuto (ALREADY_RUNNING): il polling lo riscopre da GET /datasets/.
+                       pollingStatus?.trackDataset(result.takeIf { it > -1 })
                        setAcquisitionState(true)
                    }else{
                        setAcquisitionState(false)
@@ -1383,6 +1392,7 @@ class Window(private val context: Context) {
                }else{
                    val result = api.startVideo(d)
                    if(result>-1 || result==Webserver.ALREADY_RUNNING) {
+                       pollingStatus?.trackDataset(result.takeIf { it > -1 })
                        setAcquisitionState(true)
                    }else{
                        setAcquisitionState(false)
@@ -1396,6 +1406,7 @@ class Window(private val context: Context) {
 
            }
          } finally {
+             remoteStateIgnoredUntil = System.currentTimeMillis() + STATE_GRACE_MS
              Handler(Looper.getMainLooper()).post { btn_start_acquisition.isEnabled = true }
          }
        }.start()
@@ -1422,54 +1433,52 @@ class Window(private val context: Context) {
         }
     }
 
-    // Ogni statusPollIntervalMs interroga GET /datasets/ e GET /location_system/status
-    // (via SerialBridge, che ora serializza le richieste con un lock) per sapere se
-    // un'acquisizione e' in corso con quanti scatti, e la profondita' attuale -
-    // sostituisce device_status/datasets_storage_status/location_status via Socket.IO,
-    // che sul solo bridge seriale/radio Skydroid non e' raggiungibile (serve un vero
-    // percorso IP).
-    private val statusPollRunnable = object : Runnable {
-        override fun run() {
-            if (!statusPollingActive) return
-            if (captureInFlight) {
-                // Riprova al giro dopo: perdere un aggiornamento di stato non costa
-                // nulla, ritardare lo scatto si'.
-                statusPollHandler.postDelayed(this, statusPollIntervalMs)
-                return
-            }
-            Thread {
-                val acqStatus = api.getAcquisitionStatus()
-                // getDepthMeters() si auto-disattiva dopo qualche errore: la rotta
-                // /location_system/status non e' esposta dal server, e continuare a
-                // interrogarla costa uno slot del bridge seriale ogni ciclo per un 404.
-                val depthMeters = if (api.depthPollingEnabled) api.getDepthMeters() else null
-                Handler(Looper.getMainLooper()).post {
-                    if (acqStatus != null) {
-                        setAcquisitionState(acqStatus.running)
-                        if (acqStatus.running) {
-                            status.text = "Dataset ${acqStatus.datasetId} Foto ${acqStatus.items}"
-                        }
-                    }
-                    if (depthMeters != null) {
-                        depth.text = "%.2f mt".format(depthMeters)
-                    }
-                    if (statusPollingActive) {
-                        statusPollHandler.postDelayed(this, statusPollIntervalMs)
-                    }
+    // Aggiornamenti dalle sorgenti di stato (thread di rete -> main thread).
+    private val statusListener = object : StatusListener {
+
+        override fun onAcquisitionProgress(datasetId: Int, items: Int) {
+            Handler(Looper.getMainLooper()).post {
+                // Solo testo: con l'acquisizione ferma resta "Ready" (il polling o un evento in
+                // ritardo potrebbero riportare l'ultimo progresso dopo lo stop).
+                if (onAcquisition && !isRemoteStateIgnored()) {
+                    status.text = "Dataset $datasetId Foto $items"
                 }
-            }.start()
+            }
+        }
+
+        override fun onRecordingState(isRecording: Boolean) {
+            if (isRemoteStateIgnored()) return
+            Handler(Looper.getMainLooper()).post {
+                // Solo se cambia: setAcquisitionState(false) riscrive "Ready" a ogni chiamata.
+                if (!isRemoteStateIgnored() && isRecording != onAcquisition) {
+                    setAcquisitionState(isRecording)
+                }
+            }
+        }
+
+        override fun onDepth(meters: Double) {
+            Handler(Looper.getMainLooper()).post { depth.text = "%.2f mt".format(meters) }
         }
     }
 
-    fun startStatusPolling() {
-        if (statusPollingActive) return
-        statusPollingActive = true
-        statusPollHandler.postDelayed(statusPollRunnable, statusPollIntervalMs)
+    private fun isRemoteStateIgnored() = System.currentTimeMillis() < remoteStateIgnoredUntil
+
+    // (Ri)crea le sorgenti di stato per l'host corrente: updateConnection() puo' essere
+    // richiamata (cambio IP, "Aggiorna preview") e prima il socket Socket.IO veniva creato
+    // una sola volta, restando sull'indirizzo iniziale.
+    private fun startStatusUpdates(initial: AcquisitionStatus?) {
+        stopStatusUpdates()
+        val polling = PollingStatusSource(api, statusListener, isPaused = { captureInFlight })
+        polling.trackDataset(initial?.takeIf { it.running }?.datasetId)
+        val live = SocketIoStatusSource("http://$remote_host:$remote_port/", statusListener)
+        pollingStatus = polling
+        statusCoordinator = StatusCoordinator(live, polling).also { it.start() }
     }
 
-    fun stopStatusPolling() {
-        statusPollingActive = false
-        statusPollHandler.removeCallbacks(statusPollRunnable)
+    private fun stopStatusUpdates() {
+        statusCoordinator?.stop()
+        statusCoordinator = null
+        pollingStatus = null
     }
 
     fun updateConnection(answerAddress: Boolean=false){
@@ -1566,7 +1575,7 @@ class Window(private val context: Context) {
                 if (acqStatus?.running == true) {
                     status.text = "Dataset ${acqStatus.datasetId} Foto ${acqStatus.items}"
                 }
-                startStatusPolling()
+                startStatusUpdates(acqStatus)
 
                 updateValues()
                 if (answerAddress) {
@@ -1577,72 +1586,6 @@ class Window(private val context: Context) {
                     startPreview()
                 }
 
-                if (!::s.isInitialized) {
-                    s=SocketIOConnection()
-                    s.init("http://"+remote_host+":"+remote_port+"/")
-                    onCameraState(false)
-
-                    s.socket.on(Socket.EVENT_CONNECT,Emitter.Listener {
-                        onCameraState(true)
-                    })
-
-                    s.socket.on(Socket.EVENT_DISCONNECT,Emitter.Listener {
-                        onCameraState(false)
-                        Thread.sleep(2000)
-                        s.init("http://"+remote_host+":"+remote_port+"/");
-                    })
-
-
-                    s.socket.on("device_status", Emitter.Listener { it->
-                        it.forEach {
-                                row->
-                            var device=row as JSONObject
-                            if(device.get("name")=="arducam"){
-                                var isRecording = device.getBoolean("is_recording")
-                                setAcquisitionState(isRecording)
-                            }
-                        }
-
-                    })
-
-                    s.socket.on("datasets_storage_status", Emitter.Listener { it->
-                        it.forEach {
-                                row->
-                            var dataset=row as JSONObject
-                            var acquisition = dataset.getJSONObject("current_camera_acquisition")
-                            if (acquisition.length() != 0) {
-                                //setAcquisitionState(true)
-                                Handler(Looper.getMainLooper()).post {
-                                    status.text = "Dataset " + acquisition.get("dataset_id").toString() +
-                                            " Foto " + acquisition.get("items").toString()
-                                }
-                            } else {
-                                //setAcquisitionState(false)
-                            }
-                        }
-
-                    });
-
-                    s.socket.on("location_status", Emitter.Listener{ it ->
-                        it.forEach {
-                            row->
-                            var location = row as JSONObject
-                            var altitude = location.optJSONArray("altitude")
-                            if (altitude != null && altitude.length() >= 2 && altitude.getString(1) == "BSL") {
-                                val altitudeValue = altitude.getDouble(0)
-                                Handler(Looper.getMainLooper()).post {
-                                    depth.text = "%.2f mt".format(altitudeValue)
-                                }
-                            }
-
-
-                        }
-
-                    })
-                }
-                if (!s.isConnected()) {
-                    s.socket.connect()
-                }
                 //startPreview()
             }
         }.start()
@@ -1703,6 +1646,12 @@ class Window(private val context: Context) {
         videoPlayer = null
         serialJpegVideoPlayer?.stop()
         serialJpegVideoPlayer = null
+    }
+
+    private companion object {
+        // Dopo uno start/stop lo stato riportato dal server si ignora ancora per questo
+        // tempo: copre eventi Socket.IO e risposte di polling partiti prima del comando.
+        const val STATE_GRACE_MS = 3_000L
     }
 
     @SuppressLint("ResourceAsColor")
