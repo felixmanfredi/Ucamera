@@ -22,172 +22,245 @@
             android:layout_height="match_parent"
             android:orientation="vertical"
             >
+            <!-- Barra: trascina la finestra (Window.initWindow), mostra versione,
+                 collegamento in uso (WIFI/RADIO), profondita' e i pulsanti tutto schermo
+                 e comprimi/espandi. -->
             <FrameLayout
                 android:id="@+id/windowbar"
                 android:layout_width="match_parent"
                 android:layout_height="22dp"
-                android:background="#2596be"
-                >
-                <ImageView
-                    android:layout_width="18dp"
-                    android:layout_height="18dp"
-                    android:layout_marginLeft="2dp"
-                    android:layout_marginTop="2dp"
-                    android:background="@mipmap/ic_launcher">
-                </ImageView>
-                <TextView
-                    android:id="@+id/title"
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:layout_marginLeft="22dp"
-                    android:textColor="@color/white"
-                    android:text="3DR UCamera">
+                android:background="#2596be">
 
-                </TextView>
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="match_parent"
+                    android:orientation="horizontal"
+                    android:gravity="center_vertical"
+                    android:paddingLeft="2dp"
+                    android:paddingRight="2dp">
 
-                <TextView
-                    android:id="@+id/depth"
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:textColor="@color/white"
-                    android:layout_gravity="end"
-                    android:layout_marginEnd="46dp"
-                    android:text="0.0 metri">
+                    <ImageView
+                        android:layout_width="18dp"
+                        android:layout_height="18dp"
+                        android:background="@mipmap/ic_launcher" />
 
-                </TextView>
-                <Button
-                    android:id="@+id/btn_fullscreen"
-                    android:layout_width="18dp"
-                    android:layout_height="18dp"
-                    android:layout_gravity="end"
-                    android:layout_marginTop="2dp"
-                    android:layout_marginRight="22dp"
-                    android:backgroundTint="@color/white"
-                    android:minWidth="0dp"
-                    android:paddingLeft="0dp"
-                    android:paddingRight="0dp"
-                    android:textSize="9sp"
-                    android:text="FS">
+                    <TextView
+                        android:id="@+id/title"
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:layout_marginLeft="4dp"
+                        android:ellipsize="end"
+                        android:singleLine="true"
+                        android:textColor="@color/white"
+                        android:textSize="12sp"
+                        android:text="3DR UCamera" />
 
-                </Button>
-                <Button
-                    android:id="@+id/btn_collapse"
-                    android:layout_width="18dp"
-                    android:layout_height="18dp"
-                    android:layout_gravity="end"
-                    android:layout_marginTop="2dp"
-                    android:layout_marginRight="2dp"
-                    android:backgroundTint="@color/white"
-                    android:background="@drawable/down">
+                    <!-- Collegamento usato dai comandi verso la camera: WIFI o RADIO
+                         (vedi Window.showLink()). Nascosto finche' non parte la prima richiesta. -->
+                    <TextView
+                        android:id="@+id/link_badge"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:layout_marginRight="4dp"
+                        android:paddingLeft="4dp"
+                        android:paddingRight="4dp"
+                        android:textColor="@color/white"
+                        android:textSize="8sp"
+                        android:textStyle="bold"
+                        android:visibility="gone" />
 
-                </Button>
+                    <TextView
+                        android:id="@+id/depth"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:layout_marginRight="4dp"
+                        android:textColor="@color/white"
+                        android:textSize="12sp"
+                        android:text="0.0 metri" />
+
+                    <Button
+                        android:id="@+id/btn_fullscreen"
+                        android:layout_width="18dp"
+                        android:layout_height="18dp"
+                        android:layout_marginRight="2dp"
+                        android:backgroundTint="@color/white"
+                        android:minWidth="0dp"
+                        android:minHeight="0dp"
+                        android:insetTop="0dp"
+                        android:insetBottom="0dp"
+                        android:paddingLeft="0dp"
+                        android:paddingRight="0dp"
+                        android:paddingTop="0dp"
+                        android:paddingBottom="0dp"
+                        android:textSize="9sp"
+                        android:text="FS" />
+
+                    <Button
+                        android:id="@+id/btn_collapse"
+                        android:layout_width="18dp"
+                        android:layout_height="18dp"
+                        android:backgroundTint="@color/white"
+                        android:background="@drawable/down" />
+                </LinearLayout>
             </FrameLayout>
 
-            <!-- Toolbar -->
-            <FrameLayout
+            <!-- Contenuto: corpo (preview + schede) e pannello aperto. Verticale in compatto;
+                 a tutto schermo con display orizzontale diventa orizzontale, col pannello a
+                 destra della preview (vedi Window.applyLayout()). -->
+            <LinearLayout
+                android:id="@+id/content"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical">
+
+            <!-- Corpo: preview a tutta larghezza e, sotto, le schede in orizzontale.
+                 Comprimere la finestra (btn_collapse) nasconde tutto il corpo. -->
+            <LinearLayout
+                android:id="@+id/body"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:background="@color/white"
-                >
-                <LinearLayout
-                    android:id="@+id/body"
+                android:orientation="vertical">
+
+                <FrameLayout
                     android:layout_width="match_parent"
-                    android:layout_height="match_parent"
-                    android:orientation="horizontal">
+                    android:layout_height="wrap_content">
 
+                    <!-- Altezza ricalcolata da Window.applyPreviewSize(): compatta segue le
+                         proporzioni dello stream (4:3 su 270dp = 203dp), a tutto schermo prende
+                         lo spazio libero. -->
+                    <androidx.constraintlayout.widget.ConstraintLayout
+                        android:id="@+id/preview_container"
+                        android:layout_width="match_parent"
+                        android:layout_height="203dp"
+                        android:background="@color/black">
+                        <TextureView
+                            android:id="@+id/preview"
+                            android:layout_width="match_parent"
+                            android:layout_height="match_parent" />
+                    </androidx.constraintlayout.widget.ConstraintLayout>
 
-                    <FrameLayout
+                    <ImageView
+                        android:id="@+id/recording"
+                        android:layout_width="16dp"
+                        android:layout_height="16dp"
+                        android:layout_gravity="top|start"
+                        android:layout_margin="6dp"
+                        android:src="@drawable/rectangle"
+                        android:visibility="gone" />
+
+                    <TextView
+                        android:id="@+id/status"
                         android:layout_width="wrap_content"
-                        android:layout_height="match_parent"
-                        >
-                    <!--
-                    <WebView
-                        android:id="@+id/preview"
-                        android:layout_width="150dp"
-                        android:layout_height="match_parent">
+                        android:layout_height="wrap_content"
+                        android:layout_gravity="top|end"
+                        android:layout_margin="6dp"
+                        android:text="Status"
+                        android:textColor="@color/white"
+                        android:textSize="7pt" />
 
-                    </WebView>
-                    -->
+                    <!-- Cerchio "in lavorazione": visibile finche' una richiesta verso la
+                         camera e' in viaggio (vedi Window.requestInFlight()). In quel tempo
+                         i comandi sono disabilitati, quindi nessun tap viene perso in silenzio. -->
+                    <ProgressBar
+                        android:id="@+id/busy_indicator"
+                        style="?android:attr/progressBarStyle"
+                        android:layout_width="36dp"
+                        android:layout_height="36dp"
+                        android:layout_gravity="center"
+                        android:indeterminate="true"
+                        android:indeterminateTint="@color/white"
+                        android:visibility="gone" />
+                </FrameLayout>
 
-                        <androidx.constraintlayout.widget.ConstraintLayout
-                            android:id="@+id/preview_container"
-                            android:layout_width="150dp"
-                            android:layout_height="match_parent">
-                            <TextureView
-                                android:id="@+id/preview"
-                                android:layout_width="match_parent"
-                                android:layout_height="match_parent">
-
-                            </TextureView>
-                            <!--
-
-                            <org.videolan.libvlc.util.VLCVideoLayout
-                                android:id="@+id/preview"
-                                android:layout_width="0dp"
-                                android:layout_height="0dp"
-                                app:layout_constraintBottom_toBottomOf="parent"
-                                app:layout_constraintEnd_toEndOf="parent"
-                                app:layout_constraintStart_toStartOf="parent"
-                                app:layout_constraintTop_toTopOf="parent" />
-                                -->
-                        </androidx.constraintlayout.widget.ConstraintLayout>
-
-                        <ImageView
-                            android:id="@+id/recording"
-                            android:layout_width="20dp"
-                            android:layout_height="20dp"
-                            android:layout_marginLeft="10dp"
-                            android:layout_marginTop="10dp"
-                            android:src="@drawable/rectangle"
-                            android:visibility="gone"
-
-                            ></ImageView>
-
-                        <TextView
-                            android:id="@+id/status"
-                            android:layout_width="wrap_content"
-                            android:layout_height="wrap_content"
-                            android:layout_marginTop="10dp"
-                            android:width="140dp"
-                            android:text="Status"
-                            android:textAlignment="textEnd"
-                            android:textColor="@color/white"
-                            android:textFontWeight="@integer/material_motion_duration_long_1"
-                            android:textSize="7pt"></TextView>
-                    </FrameLayout>
-
-
+                <!-- Schede: la scheda aperta e' evidenziata (Window.updateTabs()). -->
                 <LinearLayout
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:orientation="vertical"
-                    >
-
-
+                    android:orientation="horizontal"
+                    android:paddingTop="2dp"
+                    android:paddingBottom="2dp">
 
                     <Button
                         android:id="@+id/btn_open_acquisition"
-                        android:layout_width="match_parent"
-                        android:layout_height="40dp"
+                        android:layout_width="0dp"
+                        android:layout_height="32dp"
+                        android:layout_weight="1"
+                        android:layout_marginLeft="2dp"
+                        android:layout_marginRight="2dp"
+                        android:minWidth="0dp"
+                        android:insetTop="0dp"
+                        android:insetBottom="0dp"
+                        android:paddingLeft="0dp"
+                        android:paddingRight="0dp"
+                        android:paddingTop="0dp"
+                        android:paddingBottom="0dp"
+                        android:textSize="9sp"
+                        android:text="Acquisiz." />
 
-                        android:text="Acquisizione"></Button>
                     <Button
                         android:id="@+id/btn_open_config"
-                        android:layout_width="match_parent"
-                        android:layout_height="40dp"
-                        android:text="Parametri"></Button>
+                        android:layout_width="0dp"
+                        android:layout_height="32dp"
+                        android:layout_weight="1"
+                        android:layout_marginLeft="2dp"
+                        android:layout_marginRight="2dp"
+                        android:minWidth="0dp"
+                        android:insetTop="0dp"
+                        android:insetBottom="0dp"
+                        android:paddingLeft="0dp"
+                        android:paddingRight="0dp"
+                        android:paddingTop="0dp"
+                        android:paddingBottom="0dp"
+                        android:textSize="9sp"
+                        android:text="Parametri" />
+
+                    <Button
+                        android:id="@+id/btn_open_focus"
+                        android:layout_width="0dp"
+                        android:layout_height="32dp"
+                        android:layout_weight="1"
+                        android:layout_marginLeft="2dp"
+                        android:layout_marginRight="2dp"
+                        android:minWidth="0dp"
+                        android:insetTop="0dp"
+                        android:insetBottom="0dp"
+                        android:paddingLeft="0dp"
+                        android:paddingRight="0dp"
+                        android:paddingTop="0dp"
+                        android:paddingBottom="0dp"
+                        android:textSize="9sp"
+                        android:text="Fuoco" />
+
                     <Button
                         android:id="@+id/btn_open_other"
-                        android:layout_width="match_parent"
-                        android:layout_height="40dp"
-                        android:text="Altro"></Button>
-
+                        android:layout_width="0dp"
+                        android:layout_height="32dp"
+                        android:layout_weight="1"
+                        android:layout_marginLeft="2dp"
+                        android:layout_marginRight="2dp"
+                        android:minWidth="0dp"
+                        android:insetTop="0dp"
+                        android:insetBottom="0dp"
+                        android:paddingLeft="0dp"
+                        android:paddingRight="0dp"
+                        android:paddingTop="0dp"
+                        android:paddingBottom="0dp"
+                        android:textSize="9sp"
+                        android:text="Altro" />
 
                 </LinearLayout>
-
             </LinearLayout>
 
-        </FrameLayout>
+            <!-- Pannelli: ne e' visibile al massimo uno (Window.togglePanel()). -->
+            <LinearLayout
+                android:id="@+id/panels_container"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical"
+                android:background="@color/white"
+                android:visibility="gone">
 
         <!-- Acquisizioni -->
             <FrameLayout
@@ -228,6 +301,12 @@
                         </Button>
                     </LinearLayout>
 
+                    <Button
+                        android:id="@+id/btn_preview_image"
+                        android:layout_width="match_parent"
+                        android:layout_height="40dp"
+                        android:text="Scatto di prova" />
+
 
 
                 </LinearLayout>
@@ -258,55 +337,7 @@
                     <include android:id="@+id/contrast_control" layout="@layout/layout_param"></include>
                     <include android:id="@+id/sharpness_control" layout="@layout/layout_param"></include>
                     <include android:id="@+id/saturation_control" layout="@layout/layout_param"></include>
-                    <LinearLayout
-                        android:layout_width="match_parent"
-                        android:layout_height="wrap_content"
-                        android:orientation="horizontal"
-                        android:gravity="center_vertical">
-
-                        <include
-                            android:id="@+id/lensposition_control"
-                            android:layout_width="wrap_content"
-                            android:layout_height="wrap_content"
-                            layout="@layout/layout_param"></include>
-
-                        <Button
-                            android:id="@+id/btn_autofocus"
-                            android:layout_width="40dp"
-                            android:layout_height="40dp"
-                            android:layout_marginStart="8dp"
-                            android:minWidth="0dp"
-                            android:paddingLeft="0dp"
-                            android:paddingRight="0dp"
-                            android:textSize="9sp"
-                            android:text="--">
-                        </Button>
-
-                    </LinearLayout>
-
-                    <!-- Parametri della RICERCA del fuoco. Contano solo quando e' la
-                         camera a cercarlo (AF-S / AF-C): in manuale libcamera li ignora
-                         e il gruppo sparisce, vedi
-                         Window.updateControlsEnabled(). Parte "gone" perche' quando la
-                         finestra viene creata le impostazioni non sono ancora arrivate. -->
-                    <LinearLayout
-                        android:id="@+id/af_search_group"
-                        android:layout_width="match_parent"
-                        android:layout_height="wrap_content"
-                        android:orientation="vertical"
-                        android:visibility="gone">
-
-                        <include android:id="@+id/afrange_control" layout="@layout/layout_param"></include>
-
-                        <include android:id="@+id/afspeed_control" layout="@layout/layout_param"></include>
-
-                        <!-- Finestra di messa a fuoco: riquadro centrale di lato variabile
-                             (20%..100%, 100% = fotogramma pieno). A fotogramma pieno uno
-                             sfondo a forte contrasto puo' vincere sul soggetto, e la camera
-                             mette a fuoco dietro di esso. -->
-                        <include android:id="@+id/afwindow_control" layout="@layout/layout_param"></include>
-
-                    </LinearLayout>
+                    <!-- Fuoco e ricerca AF stanno nella scheda Fuoco (focus_panel). -->
 
                     <LinearLayout
                         android:layout_width="match_parent"
@@ -338,27 +369,8 @@
                     </LinearLayout>
                     <include android:id="@+id/exposuretime_control" layout="@layout/layout_param"></include>
                     <include android:id="@+id/gain_control" layout="@layout/layout_param"></include>
-
-                    <LinearLayout
-                        android:layout_width="match_parent"
-                        android:layout_height="wrap_content"
-                        >
-                        <Button
-                            android:id="@+id/btn_preview_image"
-                            android:layout_width="wrap_content"
-                            android:layout_height="match_parent"
-                            android:text="Scatto di prova">
-
-                        </Button>
-                        <Button
-                            android:id="@+id/btn_reset_settings"
-                            android:layout_width="wrap_content"
-                            android:layout_height="match_parent"
-                            android:text="Reset">
-
-                        </Button>
-
-                    </LinearLayout>
+                    <!-- "Scatto di prova" sta in Acquisizione e "Reset parametri" in Altro:
+                         la scheda resta piu' corta e ISO si raggiunge con meno scorrimento. -->
 
 
                 </LinearLayout>
@@ -367,6 +379,121 @@
 
 
 
+
+            </ScrollView>
+
+            <!-- Fuoco: i tre modi sempre visibili (quello in uso evidenziato), la lente e
+                 i parametri della ricerca AF. La ricerca resta modificabile in ogni modo,
+                 cosi' si prepara PRIMA di lanciare un AF-S. Vedi Window.updateFocusPanel(). -->
+            <ScrollView
+                android:id="@+id/focus_panel"
+                android:background="@color/white"
+                android:layout_width="match_parent"
+                android:layout_height="150dp"
+                android:visibility="gone">
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="vertical"
+                    android:padding="4dp">
+
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:orientation="horizontal">
+
+                        <Button
+                            android:id="@+id/btn_focus_mf"
+                            android:layout_width="0dp"
+                            android:layout_height="40dp"
+                            android:layout_weight="1"
+                            android:layout_marginLeft="2dp"
+                            android:layout_marginRight="2dp"
+                            android:minWidth="0dp"
+                            android:insetTop="0dp"
+                            android:insetBottom="0dp"
+                            android:paddingLeft="0dp"
+                            android:paddingRight="0dp"
+                            android:textAllCaps="false"
+                            android:textSize="11sp"
+                            android:text="MF" />
+
+                        <Button
+                            android:id="@+id/btn_focus_afs"
+                            android:layout_width="0dp"
+                            android:layout_height="40dp"
+                            android:layout_weight="1"
+                            android:layout_marginLeft="2dp"
+                            android:layout_marginRight="2dp"
+                            android:minWidth="0dp"
+                            android:insetTop="0dp"
+                            android:insetBottom="0dp"
+                            android:paddingLeft="0dp"
+                            android:paddingRight="0dp"
+                            android:textAllCaps="false"
+                            android:textSize="11sp"
+                            android:text="AF-S" />
+
+                        <Button
+                            android:id="@+id/btn_focus_afc"
+                            android:layout_width="0dp"
+                            android:layout_height="40dp"
+                            android:layout_weight="1"
+                            android:layout_marginLeft="2dp"
+                            android:layout_marginRight="2dp"
+                            android:minWidth="0dp"
+                            android:insetTop="0dp"
+                            android:insetBottom="0dp"
+                            android:paddingLeft="0dp"
+                            android:paddingRight="0dp"
+                            android:textAllCaps="false"
+                            android:textSize="11sp"
+                            android:text="AF-C" />
+
+                    </LinearLayout>
+
+                    <!-- Modo in uso, o cosa sta facendo la richiesta in corso. -->
+                    <TextView
+                        android:id="@+id/focus_status"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="2dp"
+                        android:layout_marginBottom="2dp"
+                        android:textSize="10sp"
+                        android:text="--" />
+
+                    <!-- Posizione della lente: modificabile solo in Manuale. -->
+                    <include android:id="@+id/lensposition_control" layout="@layout/layout_param"></include>
+
+                    <TextView
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="4dp"
+                        android:textSize="10sp"
+                        android:text="Ricerca AF · usata da AF-S e AF-C" />
+
+                    <include android:id="@+id/afrange_control" layout="@layout/layout_param"></include>
+
+                    <include android:id="@+id/afspeed_control" layout="@layout/layout_param"></include>
+
+                    <!-- Finestra di messa a fuoco: riquadro centrale di lato variabile
+                         (20%..100%, 100% = fotogramma pieno). A fotogramma pieno uno
+                         sfondo a forte contrasto puo' vincere sul soggetto, e la camera
+                         mette a fuoco dietro di esso. -->
+                    <include android:id="@+id/afwindow_control" layout="@layout/layout_param"></include>
+
+                    <!-- Esito dell'ultimo cambio di modo (es. AF-S riuscito / non riuscito). -->
+                    <TextView
+                        android:id="@+id/focus_result"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="4dp"
+                        android:padding="4dp"
+                        android:textSize="10sp"
+                        android:visibility="gone" />
+
+                </LinearLayout>
 
             </ScrollView>
 
@@ -392,6 +519,12 @@
                         android:text="Aggiorna connessione"></Button>
 
                     <Button
+                        android:id="@+id/btn_reset_settings"
+                        android:layout_width="match_parent"
+                        android:layout_height="40dp"
+                        android:text="Reset parametri" />
+
+                    <Button
                         android:id="@+id/btn_upload_firmware"
                         android:layout_width="match_parent"
                         android:layout_height="40dp"
@@ -408,6 +541,11 @@
 
             </FrameLayout>
 
+            </LinearLayout>
+            <!-- fine panels_container -->
+
+            </LinearLayout>
+            <!-- fine content -->
 
         </LinearLayout>
 

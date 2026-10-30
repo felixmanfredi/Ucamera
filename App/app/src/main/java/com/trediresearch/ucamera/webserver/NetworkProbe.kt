@@ -8,21 +8,17 @@ import android.net.NetworkRequest
 import android.util.Log
 import okhttp3.Dns
 import okhttp3.OkHttpClient
-import retrofit2.Retrofit
+import okhttp3.Request
 import java.net.InetAddress
 import java.util.concurrent.TimeUnit
 
 /**
- * Decide se la camera e' raggiungibile via IP (Wi-Fi) e, in caso affermativo, fornisce
- * un client REST che ci parla direttamente invece di passare dal bridge seriale.
+ * Percorso Wi-Fi verso la camera: decide se la camera risponde via IP e, in caso
+ * affermativo, fornisce un client REST diretto. Lo usa [RoutingInterceptor] per OGNI
+ * richiesta (dalla 2.0; prima serviva solo allo scatto di prova): via Wi-Fi le richieste
+ * non passano dal bridge seriale, che serve una richiesta alla volta.
  *
- * Serve a un solo caso d'uso: lo scatto di prova. E' la richiesta con la risposta piu'
- * grande (un JPEG da decine di KB) e quella che sul percorso seriale soffre di piu' -
- * l'ESP32 deve tenerne due copie in heap senza PSRAM, e il frame seriale ha un campo
- * lunghezza a 16 bit. Tutto il resto (impostazioni, polling, stream FPV) resta sulla
- * seriale, che e' l'unico percorso disponibile quando si e' solo sotto radio Skydroid.
- *
- * Due dettagli non ovvi:
+ * Tre dettagli non ovvi:
  *
  * 1. **Binding esplicito alla rete Wi-Fi.** La radio Skydroid non e' una rete IP: se il
  *    telefono ha anche i dati mobili attivi, la rete di default e' quella, e una
@@ -31,25 +27,22 @@ import java.util.concurrent.TimeUnit
  *    usare `bindProcessToNetwork`, che e' globale di processo e romperebbe il resto.
  *
  * 2. **Sonda funzionale, non ping.** ICMP e' spesso filtrato e per tempi affidabili
- *    servirebbe root. Si usa `GET /version/` con timeout corto, e il risultato vive in
- *    cache per [CACHE_TTL_MS] cosi' non si paga una sonda per ogni scatto.
+ *    servirebbe root. Si usa `GET /version/` con timeout corto.
+ *
+ * 3. **Isteresi** (vedi [LinkHealth]): un Wi-Fi buono si ricontrolla ogni 10 s; dopo un
+ *    errore (sonda o richiesta vera) si resta sulla radio per 30 s prima di riprovare.
  */
-class NetworkProbe(context: Context, private val baseUrl: String) {
+class NetworkProbe(context: Context, private val baseUrl: String) : WifiRoute {
 
     companion object {
         private const val TAG = "NetworkProbe"
 
-        // Quanto dura l'esito di una sonda prima di rifarla. Abbastanza lungo da non
-        // sondare a ogni scatto, abbastanza corto da accorgersi in fretta che il Wi-Fi
-        // e' tornato (o sparito) durante una sessione.
-        private const val CACHE_TTL_MS = 10_000L
-
         // La sonda non deve mai far aspettare l'utente: se entro questo tempo l'IP non
-        // risponde, si va direttamente sulla seriale.
+        // risponde, si va direttamente sulla radio.
         private const val PROBE_TIMEOUT_MS = 1_500L
 
-        // Timeout delle richieste vere su IP. Generoso rispetto alla sonda (lo scatto
-        // comprende l'acquisizione lato camera) ma molto sotto i 20s del bridge seriale.
+        // Timeout delle richieste vere su IP. Copre un AF-S (tipicamente <2 s) e lo scatto
+        // di prova, restando sotto i 20 s del bridge seriale.
         private const val DIRECT_TIMEOUT_MS = 8_000L
     }
 
@@ -57,28 +50,28 @@ class NetworkProbe(context: Context, private val baseUrl: String) {
     private val connectivity =
         appContext.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
 
+    private val health = LinkHealth()
+
     @Volatile
     private var wifiNetwork: Network? = null
 
-    // Retrofit costruito sulla Network corrente. Va ricostruito quando la rete cambia,
+    // Client costruiti sulla Network corrente. Vanno ricostruiti quando la rete cambia,
     // perche' socketFactory e dns sono legati a quella specifica Network.
     private var boundNetwork: Network? = null
-    private var boundApi: WebserverApi? = null
-
-    private var lastProbeMs = 0L
-    private var lastProbeOk = false
+    private var boundClient: OkHttpClient? = null
+    private var boundProbeClient: OkHttpClient? = null
 
     private val callback = object : ConnectivityManager.NetworkCallback() {
         override fun onAvailable(network: Network) {
             wifiNetwork = network
-            invalidate()
+            health.reset()
             Log.i(TAG, "Rete Wi-Fi disponibile: $network")
         }
 
         override fun onLost(network: Network) {
             if (wifiNetwork == network) {
                 wifiNetwork = null
-                invalidate()
+                health.reset()
                 Log.i(TAG, "Rete Wi-Fi persa: $network")
             }
         }
@@ -99,7 +92,7 @@ class NetworkProbe(context: Context, private val baseUrl: String) {
             cm.registerNetworkCallback(request, callback)
             registered = true
         } catch (e: Exception) {
-            // Manca ACCESS_NETWORK_STATE o il sistema rifiuta: si resta sul solo seriale.
+            // Manca ACCESS_NETWORK_STATE o il sistema rifiuta: si resta sulla sola radio.
             Log.e(TAG, "registerNetworkCallback: " + e.message)
         }
     }
@@ -115,57 +108,50 @@ class NetworkProbe(context: Context, private val baseUrl: String) {
         registered = false
         wifiNetwork = null
         boundNetwork = null
-        boundApi = null
+        boundClient = null
+        boundProbeClient = null
     }
 
-    /** Forza una nuova sonda alla prossima richiesta (rete cambiata o tentativo fallito). */
-    @Synchronized
-    fun invalidate() {
-        lastProbeMs = 0L
-        lastProbeOk = false
+    override fun reportFailure() {
+        health.record(false)
     }
 
     /**
-     * Il client diretto se la camera risponde via IP, altrimenti null. Chiamata
-     * bloccante (puo' eseguire la sonda): va usata da un thread di background.
+     * Il client diretto se la camera risponde via Wi-Fi, altrimenti null. Senza rete Wi-Fi
+     * risponde subito; altrimenti puo' eseguire la sonda: va chiamata da un thread di
+     * background (lo e' sempre: e' dentro una chiamata Retrofit .execute()).
      */
     @Synchronized
-    fun reachableApi(): WebserverApi? {
-        val api = apiForCurrentNetwork() ?: return null
-
-        val now = System.currentTimeMillis()
-        if (now - lastProbeMs < CACHE_TTL_MS) {
-            return if (lastProbeOk) api else null
+    override fun client(): OkHttpClient? {
+        val network = wifiNetwork ?: return null
+        bindTo(network)
+        if (health.needsCheck()) {
+            health.record(probe())
         }
-
-        lastProbeMs = now
-        lastProbeOk = probe(api)
-        return if (lastProbeOk) api else null
+        return if (health.isUp()) boundClient else null
     }
 
-    private fun probe(api: WebserverApi): Boolean {
+    private fun probe(): Boolean {
+        val client = boundProbeClient ?: return false
         return try {
-            val resp = api.getVersion().execute()
-            val ok = resp.isSuccessful && resp.body()?.status == "success"
-            if (!ok) Log.w(TAG, "Sonda IP: risposta inattesa (HTTP ${resp.code()})")
-            ok
+            val request = Request.Builder().url(baseUrl.trimEnd('/') + "/version/").build()
+            client.newCall(request).execute().use { resp ->
+                val ok = resp.isSuccessful
+                if (!ok) Log.w(TAG, "Sonda IP: risposta inattesa (HTTP ${resp.code()})")
+                ok
+            }
         } catch (e: Exception) {
             Log.i(TAG, "Sonda IP fallita: " + e.message)
             false
         }
     }
 
-    private fun apiForCurrentNetwork(): WebserverApi? {
-        val network = wifiNetwork ?: return null
-        val cached = boundApi
-        if (cached != null && boundNetwork == network) return cached
-
+    private fun bindTo(network: Network) {
+        if (boundNetwork == network && boundClient != null) return
         val client = OkHttpClient.Builder()
             .connectTimeout(PROBE_TIMEOUT_MS, TimeUnit.MILLISECONDS)
             // callTimeout e' l'unico che limita davvero la durata totale della chiamata;
-            // read/write da soli non bastano, ed e' il motivo per cui i 2s configurati
-            // sul client seriale non hanno mai avuto effetto (li' c'e' un interceptor
-            // applicativo, che non e' soggetto ai timeout di socket).
+            // read/write da soli non bastano.
             .callTimeout(DIRECT_TIMEOUT_MS, TimeUnit.MILLISECONDS)
             .readTimeout(DIRECT_TIMEOUT_MS, TimeUnit.MILLISECONDS)
             .writeTimeout(DIRECT_TIMEOUT_MS, TimeUnit.MILLISECONDS)
@@ -178,20 +164,12 @@ class NetworkProbe(context: Context, private val baseUrl: String) {
                     network.getAllByName(hostname).toList()
             })
             .build()
-
-        return try {
-            val api = Retrofit.Builder()
-                .baseUrl(baseUrl)
-                .addConverterFactory(MultipleConverterFactory())
-                .client(client)
-                .build()
-                .create(WebserverApi::class.java)
-            boundNetwork = network
-            boundApi = api
-            api
-        } catch (e: Exception) {
-            Log.e(TAG, "Costruzione client diretto fallita: " + e.message)
-            null
-        }
+        boundNetwork = network
+        boundClient = client
+        // Stessa rete e stesso pool, ma la sonda non deve mai durare piu' di PROBE_TIMEOUT_MS.
+        boundProbeClient = client.newBuilder()
+            .callTimeout(PROBE_TIMEOUT_MS, TimeUnit.MILLISECONDS)
+            .readTimeout(PROBE_TIMEOUT_MS, TimeUnit.MILLISECONDS)
+            .build()
     }
 }

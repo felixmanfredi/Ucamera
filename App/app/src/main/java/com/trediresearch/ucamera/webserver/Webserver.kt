@@ -83,8 +83,15 @@ class Webserver : StatusApi {
     private var bridge: SerialBridge? = null
     private var httpClient: OkHttpClient? = null
 
-    // Percorso IP diretto, usato SOLO dallo scatto di prova (vedi NetworkProbe).
+    // Percorso Wi-Fi diretto, provato per primo da ogni richiesta (vedi RoutingInterceptor).
     private var probe: NetworkProbe? = null
+
+    /**
+     * Collegamento usato dall'ultima richiesta riuscita (Wi-Fi o radio), per il badge della
+     * finestra. Chiamato dal thread della richiesta: chi lo imposta deve tornare sul main thread.
+     */
+    @Volatile
+    var linkListener: ((Link) -> Unit)? = null
 
     private var depthFailures = 0
 
@@ -99,14 +106,27 @@ class Webserver : StatusApi {
             .writeTimeout(2, TimeUnit.SECONDS)
             .connectTimeout(2, TimeUnit.SECONDS)
 
-        // REST-over-serial: when a SerialPortConnection is supplied, every Retrofit call is
-        // tunneled over it instead of real HTTP (`url` is still needed as Retrofit's base URL).
+        // Percorso Wi-Fi: esiste solo se abbiamo un Context. Nota che App.CurrentApp qui non
+        // e' utilizzabile - la classe App non e' dichiarata nel manifest, quindi onCreate()
+        // non gira mai.
+        if (context != null) {
+            probe = NetworkProbe(context, url).also { it.start() }
+        }
+
+        // REST-over-serial: con una SerialPortConnection le richieste che non passano dal
+        // Wi-Fi vengono incapsulate sulla seriale invece che in HTTP vero (`url` serve
+        // comunque come base URL di Retrofit).
+        var radio: SerialTransportInterceptor? = null
         if (serialPort != null) {
             val b = SerialBridge(App.activity, serialPort)
             b.connect()
             bridge = b
-            clientBuilder.addInterceptor(SerialTransportInterceptor(b))
+            radio = SerialTransportInterceptor(b)
         }
+
+        // Unico punto che sceglie il collegamento di ogni richiesta: Wi-Fi se la camera
+        // risponde li', radio altrimenti (vedi RoutingInterceptor).
+        clientBuilder.addInterceptor(RoutingInterceptor(probe, radio) { link -> linkListener?.invoke(link) })
 
         val client = clientBuilder.build()
         httpClient = client
@@ -119,13 +139,6 @@ class Webserver : StatusApi {
                 .build()
 
             apiservice = retrofit.create(WebserverApi::class.java)
-
-            // La sonda IP esiste solo se abbiamo un Context: senza, resta tutto sul
-            // percorso seriale. Nota che App.CurrentApp qui non e' utilizzabile - la
-            // classe App non e' dichiarata nel manifest, quindi onCreate() non gira mai.
-            if (context != null) {
-                probe = NetworkProbe(context, url).also { it.start() }
-            }
 
             return true
         } catch (e: Exception) {
@@ -232,33 +245,12 @@ class Webserver : StatusApi {
     // acquisition!"), un 502 sintetico del bridge, oppure un corpo vuoto/troncato quando
     // l'ESP32 non riesce ad allocare l'intera risposta. Classificarli serve a sapere in
     // campo quale dei problemi si sta guardando, invece di avere un unico toast generico.
-    // Senza Wi-Fi lo scatto viene comunque tentato sulla seriale: l'IP e' una
-    // scorciatoia opportunistica, non un prerequisito.
-    //  1. se la sonda dice che l'IP risponde -> tentativo diretto;
-    //  2. se quel tentativo fallisce per motivi di trasporto -> fallback seriale,
-    //     invalidando la cache della sonda;
-    //  3. se la camera ha RIFIUTATO lo scatto (envelope JSON, es. acquisizione in
-    //     corso) non si ritenta: rifiuterebbe allo stesso modo anche via seriale,
-    //     sprecando fino a 20s di timeout del bridge;
-    //  4. se la sonda dice che l'IP non c'e' -> direttamente seriale, senza perdere
-    //     tempo in un tentativo gia' destinato a fallire.
+    // Il collegamento (Wi-Fi o radio) lo sceglie RoutingInterceptor, come per ogni altra
+    // richiesta. Se il Wi-Fi cade durante lo scatto, il POST non viene rimandato in
+    // automatico; lo fa il ritentativo qui sotto, che a quel punto passa dalla radio
+    // perche' il Wi-Fi e' stato segnato come guasto.
     fun capture(): CaptureResult {
-        val direct = try {
-            probe?.reachableApi()
-        } catch (e: Exception) {
-            Log.e(TAG, "capture/probe: " + e.message); null
-        }
-
-        if (direct != null) {
-            val result = captureVia(direct, "IP")
-            if (result.bitmap != null || result.failure == CaptureFailure.SERVER_ERROR) {
-                return result
-            }
-            Log.w(TAG, "capture: percorso IP fallito (${result.failure}), passo alla seriale")
-            probe?.invalidate()
-        }
-
-        val first = captureVia(apiservice, "seriale")
+        val first = captureVia(apiservice, "tentativo 1")
         if (first.bitmap != null || first.failure == CaptureFailure.SERVER_ERROR) return first
 
         // Un solo ritentativo, e solo sui fallimenti di TRASPORTO (timeout, corpo vuoto o
@@ -267,8 +259,8 @@ class Webserver : StatusApi {
         // e che hanno quindi una probabilita' reale di andare diversamente.
         // Se invece la camera ha RIFIUTATO lo scatto (envelope JSON, es. acquisizione in
         // corso) non si ritenta: rifiuterebbe allo stesso modo, sprecando fino a 20s.
-        Log.w(TAG, "capture: primo tentativo seriale fallito (${first.failure}), ritento una volta")
-        return captureVia(apiservice, "seriale/retry")
+        Log.w(TAG, "capture: primo tentativo fallito (${first.failure}), ritento una volta")
+        return captureVia(apiservice, "ritentativo")
     }
 
     private fun captureVia(service: WebserverApi, transport: String): CaptureResult {
@@ -381,9 +373,15 @@ class Webserver : StatusApi {
                 if (altitude.ref == "BSL" && altitude.value != null) return altitude.value
                 return null
             }
-            noteDepthFailure("HTTP " + resp.code())
+            // Solo la rotta assente (mpe-server vecchio, HTTP 404) conta per disattivare il
+            // polling. Un envelope di errore (es. sistema di posizione non configurato) dice
+            // che la rotta c'e'.
+            if (resp.code() == 404) noteDepthFailure("HTTP 404") else depthFailures = 0
         } catch (e: Exception) {
-            noteDepthFailure(e.message ?: e.javaClass.simpleName)
+            // Errore di trasporto (radio persa, timeout): non dice nulla sul server, quindi non
+            // conta. Prima contava, e con letture ogni 2 s bastavano 6 s senza radio per
+            // spegnere la profondita' fino alla riconnessione: proprio quando serve.
+            Log.w(TAG, "getDepthMeters: " + (e.message ?: e.javaClass.simpleName))
         }
         return null
     }
@@ -393,7 +391,7 @@ class Webserver : StatusApi {
         if (depthFailures >= DEPTH_FAILURES_BEFORE_DISABLE && depthPollingEnabled) {
             depthPollingEnabled = false
             Log.w(
-                TAG, "getDepthMeters: disattivato dopo $depthFailures errori consecutivi " +
+                TAG, "getDepthMeters: disattivato dopo $depthFailures risposte 404 consecutive " +
                         "($reason). Il server non espone /location_system/status (mpe-server non " +
                         "aggiornato): la profondita' arriva solo via Socket.IO, che richiede un percorso IP."
             )

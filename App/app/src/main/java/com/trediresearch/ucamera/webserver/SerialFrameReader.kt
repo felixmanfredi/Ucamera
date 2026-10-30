@@ -98,7 +98,7 @@ class SerialFrameReader(
         // poche decine di ms (continuano ad arrivare byte che fanno fallire il checksum),
         // ma a flusso fermo resterebbe bloccato, e con lui una risposta vera che si trovi
         // in quella finestra. Due secondi sono abbondanti per qualunque frame reale e
-        // restano molto sotto i 20s di timeout della richiesta.
+        // restano molto sotto i 20s di timeout della richiesta (SerialBridge.DEFAULT_TIMEOUT_MS).
         private const val CANDIDATE_TIMEOUT_MS = 2000L
     }
 

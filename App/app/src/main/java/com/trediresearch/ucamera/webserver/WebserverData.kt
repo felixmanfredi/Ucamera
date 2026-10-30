@@ -55,7 +55,7 @@ const val FOCUS_MANUAL = "manual"
 const val FOCUS_SINGLE = "afs"
 const val FOCUS_CONTINUOUS = "afc"
 
-// Ordine di ciclatura del selettore di fuoco in UI (btn_autofocus).
+// I tre modi, nell'ordine dei pulsanti della scheda Fuoco (MF, AF-S, AF-C).
 val FOCUS_MODES = listOf(FOCUS_MANUAL, FOCUS_SINGLE, FOCUS_CONTINUOUS)
 
 // Notazione fotografica standard: dice che si sta guardando lo STATO corrente, non

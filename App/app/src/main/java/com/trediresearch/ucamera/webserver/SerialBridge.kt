@@ -17,6 +17,14 @@ class SerialBridge(private val context: Context, private val serialPort: SerialP
 
         // Massimo rappresentabile dal campo lunghezza a 2 byte del framing dell'ESP32.
         private const val MAX_PAYLOAD = 65535
+
+        // Timeout di default di una richiesta (azioni dell'utente). Il bridge serve una
+        // richiesta alla volta, quindi e' anche il tempo massimo per cui una richiesta
+        // appesa blocca tutte le altre. Deve restare SOPRA il timeout HTTP dell'ESP32
+        // (15s, vedi main.cpp handleRestRequest) + margine per il giro seriale/radio
+        // Skydroid: piu' corto, l'app rinuncerebbe mentre l'ESP32 e' ancora occupato
+        // su quella richiesta, e la successiva partirebbe gia' in coda.
+        const val DEFAULT_TIMEOUT_MS = 20_000L
     }
 
     // Risposte in attesa, keyed by generazione (vedi sendRequestAndAwait).
@@ -72,7 +80,7 @@ class SerialBridge(private val context: Context, private val serialPort: SerialP
         connected = false
         reader.reset()
         // Non lasciare appese le richieste in volo: senza questo chi sta aspettando
-        // resterebbe bloccato fino al timeout di 20s su un bridge che non ascolta piu'.
+        // resterebbe bloccato fino al timeout (DEFAULT_TIMEOUT_MS) su un bridge che non ascolta piu'.
         val orphans = pendingResponses.values.toList()
         pendingResponses.clear()
         for (f in orphans) {
@@ -100,9 +108,8 @@ class SerialBridge(private val context: Context, private val serialPort: SerialP
     @Volatile
     private var currentGeneration = -1L
 
-    // 20s: deve restare comodamente sopra il timeout HTTP dell'ESP32 (15s, vedi
-    // main.cpp handleRestRequest) + margine per il giro seriale/radio Skydroid.
-    fun sendRequestAndAwait(payload: ByteArray, timeoutMs: Long = 20000): Pair<Int, ByteArray> {
+    // Timeout: vedi DEFAULT_TIMEOUT_MS.
+    fun sendRequestAndAwait(payload: ByteArray, timeoutMs: Long = DEFAULT_TIMEOUT_MS): Pair<Int, ByteArray> {
         synchronized(requestLock) {
             val port = serialPort ?: throw IOException("Porta seriale non disponibile")
             val stream = port.outputStream ?: throw IOException("Stream seriale chiuso")

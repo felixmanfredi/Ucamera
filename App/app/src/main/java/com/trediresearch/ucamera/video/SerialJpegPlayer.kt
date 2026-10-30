@@ -28,7 +28,12 @@ import java.util.concurrent.TimeUnit
  */
 class SerialJpegPlayer(
     private val serialPort: SerialPortConnection?,
-    private val outputSurface: Surface
+    private val outputSurface: Surface,
+    /**
+     * Chiamata (dal thread di rendering) quando cambiano le dimensioni dei frame: la
+     * finestra la usa per dare alla preview le proporzioni dello stream.
+     */
+    private val onFrameSize: ((width: Int, height: Int) -> Unit)? = null,
 ) {
     companion object {
         private const val TAG = "SerialJpegPlayer"
@@ -43,6 +48,10 @@ class SerialJpegPlayer(
     @Volatile
     private var running = false
     private var renderThread: Thread? = null
+
+    // Dimensioni dell'ultimo frame notificate a onFrameSize (solo thread di rendering).
+    private var lastFrameWidth = 0
+    private var lastFrameHeight = 0
 
     private val deframer = SerialFrameDeframer { jpeg ->
         // SOLO accodamento: siamo sul ReadThread di SerialPortConnection, cioe' l'unico
@@ -121,6 +130,11 @@ class SerialJpegPlayer(
             // c'e' modo di distinguere "nessun frame in arrivo" da "frame corrotti".
             Log.w(TAG, "Frame non decodificabile (${jpeg.size} byte)")
             return
+        }
+        if (bitmap.width != lastFrameWidth || bitmap.height != lastFrameHeight) {
+            lastFrameWidth = bitmap.width
+            lastFrameHeight = bitmap.height
+            onFrameSize?.invoke(bitmap.width, bitmap.height)
         }
         try {
             val canvas = outputSurface.lockCanvas(null) ?: return

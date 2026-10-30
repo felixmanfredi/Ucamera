@@ -3,6 +3,8 @@ package com.trediresearch.ucamera
 import android.annotation.SuppressLint
 import android.app.AlertDialog
 import android.content.Context
+import android.content.res.ColorStateList
+import android.graphics.Color
 import android.graphics.PixelFormat
 import android.os.Build
 import android.os.Handler
@@ -10,6 +12,9 @@ import android.os.Looper
 import android.os.StrictMode
 import android.os.StrictMode.ThreadPolicy
 import android.text.InputType
+import android.text.SpannableString
+import android.text.Spanned
+import android.text.style.RelativeSizeSpan
 import android.util.DisplayMetrics
 import android.util.Log
 import android.view.Gravity
@@ -23,6 +28,7 @@ import android.widget.EditText
 import android.widget.FrameLayout
 import android.widget.ImageView
 import android.widget.LinearLayout
+import android.widget.ProgressBar
 import android.widget.TextView
 import android.widget.Toast
 import androidx.annotation.RequiresApi
@@ -49,9 +55,17 @@ import com.trediresearch.ucamera.webserver.AF_WINDOW_FULL
 import com.trediresearch.ucamera.webserver.AF_WINDOW_MIN
 import com.trediresearch.ucamera.webserver.AF_WINDOW_STEP
 import com.trediresearch.ucamera.webserver.CaptureResult
+import com.trediresearch.ucamera.webserver.FOCUS_CONTINUOUS
 import com.trediresearch.ucamera.webserver.FOCUS_MANUAL
-import com.trediresearch.ucamera.webserver.FOCUS_MODES
+import com.trediresearch.ucamera.webserver.FOCUS_SINGLE
+import com.trediresearch.ucamera.webserver.FocusOutcome
+import com.trediresearch.ucamera.webserver.Link
+import com.trediresearch.ucamera.webserver.OutcomeKind
 import com.trediresearch.ucamera.webserver.Webserver
+import com.trediresearch.ucamera.webserver.afSearchSummary
+import com.trediresearch.ucamera.webserver.focusModeBehaviour
+import com.trediresearch.ucamera.webserver.focusModeName
+import com.trediresearch.ucamera.webserver.focusModeOutcome
 import com.trediresearch.ucamera.webserver.afRangeDescription
 import com.trediresearch.ucamera.webserver.afRangeLabel
 import com.trediresearch.ucamera.webserver.afSpeedDescription
@@ -93,12 +107,42 @@ class Window(private val context: Context) {
     // in coda la richiesta piu' fragile che abbiamo proprio quando conta.
     @Volatile
     private var captureInFlight = false
-    val windowHeight=150
-    val windowHeightMax=300
+    // Vero mentre un avvia/ferma acquisizione e' in volo (letto e scritto sul main thread).
+    private var acquisitionCommandInFlight = false
+    // Finestra compatta, dall'alto: barra, preview a tutta larghezza, riga delle schede
+    // (vedi window.xml). Con un pannello aperto si aggiunge la sua altezza.
+    private val barHeight=22
+    private val tabsHeight=36
+    private val panelHeight=150
     val windowWidth=270
-    // Larghezza della preview nella finestra compatta (come da layout). A tutto schermo
-    // viene ricalcolata in base allo spazio disponibile, vedi applyPreviewSize().
-    private val previewWidthCompact=150
+    // Proporzioni dello stream (larghezza/altezza). Parte da 4:3, quello del QVGA del
+    // plugin, e segue i frame veri (vedi onStreamFrameSize()). Limitata per non ottenere
+    // finestre assurde da un frame anomalo.
+    private var previewAspect = 4.0 / 3.0
+    private val MIN_PREVIEW_ASPECT = 1.0
+    private val MAX_PREVIEW_ASPECT = 2.4
+
+    // Margine lasciato sotto la finestra compatta e altezza minima della preview.
+    private val SCREEN_MARGIN_DP = 8
+    private val MIN_PREVIEW_DP = 80
+
+    // Altezza della preview compatta. Di norma l'immagine riempie tutta la larghezza della
+    // finestra (con un'altezza fissa di 120dp un 4:3 restava largo 160dp). Ma la finestra
+    // deve stare nello schermo: con lo smartphone in orizzontale, preview piena piu' un
+    // pannello aperto superavano l'altezza del display e la parte bassa del pannello
+    // (ISO, pulsanti) finiva fuori schermo. In quel caso la preview si accorcia.
+    private fun previewHeightCompact(panelOpen: Boolean): Int {
+        val natural = Math.round(windowWidth / previewAspect).toInt()
+        val dm = getCurrentDisplayMetrics()
+        val screenDp = (dm.heightPixels / dm.density).toInt()
+        val available = screenDp - SCREEN_MARGIN_DP - barHeight - tabsHeight -
+                (if (panelOpen) panelHeight else 0)
+        return natural.coerceAtMost(available).coerceAtLeast(MIN_PREVIEW_DP)
+    }
+
+    // Altezza della finestra compatta con o senza pannello aperto.
+    private fun compactHeight(panelOpen: Boolean) =
+        barHeight + previewHeightCompact(panelOpen) + tabsHeight + (if (panelOpen) panelHeight else 0)
     // Modalita' a tutto schermo: la finestra occupa tutto il display invece dei dp fissi
     // sopra, cosi' la preview e' grande abbastanza da valutare inquadratura e fuoco.
     private var isFullscreen=false
@@ -126,6 +170,9 @@ class Window(private val context: Context) {
     private val rootView = layoutInflater.inflate(R.layout.window, null)
     private val windowbar=rootView.findViewById<FrameLayout>(R.id.windowbar);
     lateinit var body:LinearLayout
+    // Contiene corpo e pannelli; cambia orientamento a tutto schermo (vedi applyLayout()).
+    lateinit var content:LinearLayout
+    lateinit var panels_container:LinearLayout
     lateinit var main_panel:LinearLayout
     lateinit var settings_panel:FrameLayout
     lateinit var other_panel:FrameLayout
@@ -138,9 +185,13 @@ class Window(private val context: Context) {
     lateinit var exposure_control:FrameLayout;
     lateinit var exposuretime_control:FrameLayout;
     lateinit var lensposition_control:FrameLayout;
-    // Parametri della ricerca del fuoco. Il gruppo che li contiene sparisce quando non
-    // servono (fuoco manuale, o device che non li espone): vedi updateControlsEnabled().
-    lateinit var af_search_group:LinearLayout;
+    // Scheda Fuoco: tre pulsanti di modo, riga di stato ed esito (vedi updateFocusPanel()).
+    lateinit var focus_panel:FrameLayout
+    lateinit var btn_focus_mf:Button
+    lateinit var btn_focus_afs:Button
+    lateinit var btn_focus_afc:Button
+    lateinit var focus_status:TextView
+    lateinit var focus_result:TextView
     lateinit var afrange_control:FrameLayout;
     lateinit var afspeed_control:FrameLayout;
     lateinit var afwindow_control:FrameLayout;
@@ -152,7 +203,6 @@ class Window(private val context: Context) {
     lateinit var btn_preview_image:Button
     lateinit var btn_collapse:Button
     lateinit var btn_fullscreen:Button
-    lateinit var btn_autofocus:Button
     lateinit var btn_ae:Button
     lateinit var btn_reset_settings:Button
     lateinit var preview_container:View
@@ -168,9 +218,15 @@ class Window(private val context: Context) {
     lateinit var status:TextView
     lateinit var depth:TextView
     lateinit var recording:ImageView
+    // Cerchio "in lavorazione" sulla preview (vedi requestInFlight()).
+    lateinit var busy_indicator: ProgressBar
+    // Badge WIFI/RADIO nella barra: collegamento usato dai comandi (vedi showLink()).
+    lateinit var link_badge: TextView
 
     lateinit var btn_open_acquisition:Button
     lateinit var btn_open_config:Button
+    lateinit var btn_open_focus:Button
+    lateinit var btn_open_other:Button
     //lateinit var btn_upload_firmware:Button
     // Tempi di esposizione selezionabili, in MICROsecondi, dal piu' lungo al piu' corto.
     // Le due liste vanno tenute della stessa lunghezza: EXPOSURE_TIME_LABEL[i] descrive
@@ -245,7 +301,11 @@ class Window(private val context: Context) {
         params.height = (heightInDp * dm.density).toInt()
         // x/y sono pixel, non dp: senza conversione la posizione cambia con la densita'
         // dello schermo, mentre larghezza e altezza sopra sono gia' convertite.
-        params.y = compactY ?: (65 * dm.density).toInt()
+        // Se la posizione scelta farebbe uscire la finestra dal fondo dello schermo (per
+        // esempio dopo l'apertura di un pannello) la si alza quanto basta. compactY resta
+        // quella scelta dall'utente: chiudendo il pannello la finestra torna dov'era.
+        val maxY = (dm.heightPixels - params.height).coerceAtLeast(0)
+        params.y = (compactY ?: (65 * dm.density).toInt()).coerceIn(0, maxY)
         params.x = compactX ?: (15 * dm.density).toInt()
 
 
@@ -253,7 +313,7 @@ class Window(private val context: Context) {
 
 
     private fun initWindowParams() {
-        calculateSizeAndPosition(windowParams, windowWidth, windowHeight)
+        calculateSizeAndPosition(windowParams, windowWidth, compactHeight(panelOpen = false))
     }
 
 
@@ -311,6 +371,8 @@ class Window(private val context: Context) {
 
         //mappa i controlli
         body= rootView.findViewById(R.id.body) as LinearLayout
+        content = rootView.findViewById(R.id.content) as LinearLayout
+        panels_container = rootView.findViewById(R.id.panels_container) as LinearLayout
         main_panel= rootView.findViewById(R.id.main_panel) as LinearLayout
         settings_panel= rootView.findViewById(R.id.settings_panel) as FrameLayout
         acquisition_panel= rootView.findViewById(R.id.acquisition_panel) as FrameLayout
@@ -322,13 +384,20 @@ class Window(private val context: Context) {
         exposure_control = rootView.findViewById(R.id.exposure_control) as FrameLayout
         exposuretime_control = rootView.findViewById(R.id.exposuretime_control) as FrameLayout
         lensposition_control = rootView.findViewById(R.id.lensposition_control) as FrameLayout
-        af_search_group = rootView.findViewById(R.id.af_search_group) as LinearLayout
+        focus_panel = rootView.findViewById(R.id.focus_panel) as FrameLayout
+        btn_focus_mf = rootView.findViewById(R.id.btn_focus_mf) as Button
+        btn_focus_afs = rootView.findViewById(R.id.btn_focus_afs) as Button
+        btn_focus_afc = rootView.findViewById(R.id.btn_focus_afc) as Button
+        focus_status = rootView.findViewById(R.id.focus_status) as TextView
+        focus_result = rootView.findViewById(R.id.focus_result) as TextView
         afrange_control = rootView.findViewById(R.id.afrange_control) as FrameLayout
         afspeed_control = rootView.findViewById(R.id.afspeed_control) as FrameLayout
         afwindow_control = rootView.findViewById(R.id.afwindow_control) as FrameLayout
         interval_control = rootView.findViewById(R.id.interval_control) as FrameLayout
         gain_control = rootView.findViewById(R.id.gain_control) as FrameLayout
         recording= rootView.findViewById(R.id.recording) as ImageView
+        busy_indicator = rootView.findViewById(R.id.busy_indicator) as ProgressBar
+        link_badge = rootView.findViewById(R.id.link_badge) as TextView
         btn_start_acquisition=rootView.findViewById(R.id.btn_start_acquisition) as Button
         btn_start_video=rootView.findViewById(R.id.btn_start_video) as Button
         btn_start_video.visibility = Button.GONE // acquisizione video disabilitata dall'app
@@ -338,9 +407,10 @@ class Window(private val context: Context) {
 
         btn_open_acquisition=rootView.findViewById(R.id.btn_open_acquisition) as Button
         btn_open_config=rootView.findViewById(R.id.btn_open_config) as Button
+        btn_open_focus=rootView.findViewById(R.id.btn_open_focus) as Button
+        btn_open_other=rootView.findViewById(R.id.btn_open_other) as Button
         btn_collapse=rootView.findViewById(R.id.btn_collapse) as Button
         btn_fullscreen=rootView.findViewById(R.id.btn_fullscreen) as Button
-        btn_autofocus=rootView.findViewById(R.id.btn_autofocus) as Button
         btn_ae=rootView.findViewById(R.id.btn_ae) as Button
         btn_reset_settings=rootView.findViewById(R.id.btn_reset_settings) as Button
         preview_container=rootView.findViewById(R.id.preview_container) as View
@@ -389,11 +459,12 @@ class Window(private val context: Context) {
         sharpness_control.findViewById<TextView>(R.id.label).text="Nitidezza"
         saturation_control.findViewById<TextView>(R.id.label).text="Saturazione"
         exposuretime_control.findViewById<TextView>(R.id.label).text="Tempo di esposizione"
-        afrange_control.findViewById<TextView>(R.id.label).text="Ricerca fuoco"
-        afspeed_control.findViewById<TextView>(R.id.label).text="Velocita' AF"
-        afwindow_control.findViewById<TextView>(R.id.label).text="Finestra AF"
-        // "Esposizione" e "Fuoco" hanno l'etichetta dinamica: ci finisce anche la
-        // modalita' corrente, vedi updateControlsEnabled().
+        lensposition_control.findViewById<TextView>(R.id.label).text="Lente"
+        afrange_control.findViewById<TextView>(R.id.label).text="Range"
+        afspeed_control.findViewById<TextView>(R.id.label).text="Velocità"
+        afwindow_control.findViewById<TextView>(R.id.label).text="Finestra"
+        // "Esposizione" ha l'etichetta dinamica: ci finisce anche AUTO/MAN, vedi
+        // updateControlsEnabled(). Il modo di fuoco invece e' il pulsante evidenziato.
         interval_control.findViewById<TextView>(R.id.label).text="Intervallo scatto (s)"
         gain_control.findViewById<TextView>(R.id.label).text="ISO"
 
@@ -487,8 +558,8 @@ class Window(private val context: Context) {
             // Gia' sul main thread: disabilitare dentro un post() faceva partire il
             // Thread di rete PRIMA della disabilitazione, lasciando aperta la finestra
             // per un secondo tap.
-            btn_preview_image.isEnabled=false
             captureInFlight = true
+            updateControlsEnabled() // spegne TUTTI i comandi e mostra il cerchio
             Toast.makeText(App.activity,"Cattura dello scatto di prova in corso...", Toast.LENGTH_SHORT).show()
 
             Thread {
@@ -535,12 +606,16 @@ class Window(private val context: Context) {
             openConfig()
         }
 
-        rootView.findViewById<Button>(R.id.btn_open_other).setOnClickListener{
+        btn_open_other.setOnClickListener{
             openOther()
         }
 
         btn_open_acquisition.setOnClickListener{
             openAcquisition()
+        }
+
+        btn_open_focus.setOnClickListener{
+            openFocus()
         }
 
         rootView.findViewById<Button>(R.id.btn_refresh_preview).setOnClickListener{
@@ -552,40 +627,23 @@ class Window(private val context: Context) {
             resetSettings { updateControlsEnabled() }
         }
 
-        // Selettore di modalita' di fuoco: manual -> afs -> afc -> manual. Sostituisce il
-        // vecchio pulsante "AF" one-shot: il plugin ora espone un solo comando
-        // (exec focus_mode) e 'lensposition' e' onorato SOLO in manual, quindi la modalita'
-        // corrente deve essere visibile e cambiabile, altrimenti i +/- di "Fuoco" sembrano
-        // rotti mentre e' semplicemente attivo l'autofocus.
+        // Modi di fuoco: un tap = un modo, senza ciclo ne' attesa. Passare da MF ad AF-C
+        // non attraversa piu' AF-S (che lancerebbe una messa a fuoco non chiesta), e un
+        // tap su AF-S gia' attivo rifa' la messa a fuoco.
+        btn_focus_mf.setOnClickListener { onFocusModeTapped(FOCUS_MANUAL) }
+        btn_focus_afs.setOnClickListener { onFocusModeTapped(FOCUS_SINGLE) }
+        btn_focus_afc.setOnClickListener { onFocusModeTapped(FOCUS_CONTINUOUS) }
+
         // Esposizione automatica on/off. E' una impostazione normale (passa da
         // PUT /camera/settings), a differenza del fuoco che passa da exec.
         btn_ae.setOnClickListener{
-            if (!canEditSettings()) return@setOnClickListener
-            // Stesso debounce del modo di fuoco: il tap cambia solo la scritta, l'invio
-            // parte FOCUS_MODE_DEBOUNCE_MS dopo l'ultimo tap e solo se lo stato scelto
-            // differisce da quello attuale.
+            if (!aeButtonEnabled()) return@setOnClickListener
+            // Debounce: il tap cambia solo la scritta, l'invio parte TAP_DEBOUNCE_MS dopo
+            // l'ultimo tap e solo se lo stato scelto differisce da quello attuale.
             pendingAeEnable = !(pendingAeEnable ?: settings.aeenable)
             updateControlsEnabled()
-            focusModeDebounceHandler.removeCallbacks(sendPendingAeEnable)
-            focusModeDebounceHandler.postDelayed(sendPendingAeEnable, FOCUS_MODE_DEBOUNCE_MS)
-        }
-
-        btn_autofocus.setOnClickListener{
-            if (!settingsLoaded || focusModeInFlight || afParamsInFlight || settingsPutsInFlight > 0) return@setOnClickListener
-            // Ciclo semplice e prevedibile. Atterrare su "afs" fa partire il one-shot;
-            // per rifarlo si gira di nuovo. Niente scorciatoie nascoste su un pulsante
-            // da 18dp che deve restare leggibile a colpo d'occhio.
-            // Si parte dal modo attivo (riletto dal server anche dopo un cambio fallito,
-            // quindi un tentativo non riuscito non fa avanzare il ciclo), o da quello gia'
-            // selezionato e non ancora inviato.
-            val base = pendingFocusMode ?: settings.afmode
-            val current = FOCUS_MODES.indexOf(base).let { if (it < 0) 0 else it }
-            pendingFocusMode = FOCUS_MODES[(current + 1) % FOCUS_MODES.size]
-            updateControlsEnabled()
-            // Ogni tap fa ripartire l'attesa: passare da MF ad AF-C attraversa AF-S, e
-            // senza attesa partirebbe un one-shot (bloccante) che nessuno ha chiesto.
-            focusModeDebounceHandler.removeCallbacks(sendPendingFocusMode)
-            focusModeDebounceHandler.postDelayed(sendPendingFocusMode, FOCUS_MODE_DEBOUNCE_MS)
+            tapDebounceHandler.removeCallbacks(sendPendingAeEnable)
+            tapDebounceHandler.postDelayed(sendPendingAeEnable, TAP_DEBOUNCE_MS)
         }
 
 
@@ -639,6 +697,8 @@ class Window(private val context: Context) {
         // controlli restano disabilitati. Senza, con la camera spenta updateConnection()
         // esce prima di aggiornare la UI e il pannello sembrava utilizzabile.
         updateControlsEnabled()
+        updateTabs() // colori delle schede espliciti, uguali con qualunque tema
+        applyLayout() // altezza della preview dalle proporzioni dello stream
 
         updateConnection()
 
@@ -681,11 +741,9 @@ class Window(private val context: Context) {
     }
 
 
-    // onComplete: usato dal pulsante "Reset" per disabilitarsi durante l'invio e
-    // riabilitarsi solo a richiesta finita (successo o errore) - a differenza dei
-    // controlli +/- (rapidi, incrementali, lasciati senza blocco), Reset cambia 8
-    // valori in un colpo ed e' un'azione singola come avvia/ferma/autofocus, quindi
-    // merita lo stesso trattamento per non restare "impallato" su tap ripetuti.
+    // onComplete: usato dal pulsante "Reset" per riallineare i controlli a richiesta
+    // finita (successo o errore). Come per ogni altra richiesta, finche' il PUT e' in
+    // volo tutti i comandi restano spenti (vedi requestInFlight()).
     fun resetSettings(onComplete: (() -> Unit)? = null){
         if (!settingsLoaded) { onComplete?.invoke(); return } // primo fetch da updateConnection() non ancora arrivato
         // afmode NON si tocca: non e' scrivibile via settings (si cambia solo con
@@ -747,8 +805,32 @@ class Window(private val context: Context) {
     // In piu': il PUT rispedisce l'oggetto intero, afmode e parametri AF compresi, quindi
     // non deve partire mentre un comando di fuoco e' in volo (riporterebbe il modo
     // vecchio), ne' durante un cambio AUTO/MAN.
-    private fun canEditSettings() = settingsLoaded && !onAcquisition &&
-            !aeInFlight && !focusModeInFlight && !afParamsInFlight
+    private fun canEditSettings() = settingsLoaded && !onAcquisition && !isBusy()
+
+    // Una richiesta verso la camera e' in viaggio. Finche' non torna NESSUN comando e'
+    // accettato: i controlli si spengono e compare il cerchio, cosi' un tap non viene mai
+    // scartato in silenzio. Sotto radio le richieste passano una alla volta dal lock di
+    // SerialBridge: accettare tap in quel tempo voleva dire accodarli o perderli.
+    // Il polling di stato in sottofondo non conta: non nasce da un tap.
+    private fun requestInFlight() = settingsPutsInFlight > 0 || focusModeInFlight ||
+            afParamsInFlight || aeInFlight || captureInFlight || acquisitionCommandInFlight
+
+    // Copia di requestInFlight() leggibile dal thread del polling, che salta i suoi giri
+    // finche' un comando dell'utente e' in viaggio (vedi startStatusUpdates()): sotto radio
+    // un giro di polling davanti al comando lo ritarderebbe fino a 6 s.
+    @Volatile
+    private var userRequestActive = false
+
+    // Occupato: richiesta in viaggio, oppure una scelta AUTO/MAN fatta con i tap e in attesa
+    // dell'invio (debounce). In attesa resta usabile solo il pulsante AE.
+    private fun isBusy() = requestInFlight() || pendingAeEnable != null
+
+    // Pulsanti dei modi di fuoco: passano da exec, quindi sono ammessi anche in acquisizione.
+    private fun focusModeButtonEnabled() =
+        settingsLoaded && !requestInFlight() && pendingAeEnable == null
+
+    private fun aeButtonEnabled() =
+        settingsLoaded && !onAcquisition && !requestInFlight()
 
     // PUT /camera/settings ancora senza risposta. Finche' ce n'e' uno, modo e parametri
     // di fuoco restano bloccati: il PUT porta con se' l'afmode letto prima, e arrivando
@@ -832,12 +914,14 @@ class Window(private val context: Context) {
 
     private fun stepAfRange(delta: Int) =
         stepAfValue(AF_RANGES, settings.afrange, delta) { value ->
-            applyFocusParams(range = value, describe = { afRangeDescription(it.afrange) })
+            applyFocusParams(afrange_control, "range", afRangeLabel(value), range = value,
+                describe = { afRangeDescription(it.afrange) })
         }
 
     private fun stepAfSpeed(delta: Int) =
         stepAfValue(AF_SPEEDS, settings.afspeed, delta) { value ->
-            applyFocusParams(speed = value, describe = { afSpeedDescription(it.afspeed) })
+            applyFocusParams(afspeed_control, "velocità", afSpeedLabel(value), speed = value,
+                describe = { afSpeedDescription(it.afspeed) })
         }
 
     // Il '+' allarga il riquadro centrale, il '-' lo stringe. Il valore corrente si
@@ -849,7 +933,9 @@ class Window(private val context: Context) {
         val snapped = Math.round(current.toDouble() / AF_WINDOW_STEP).toInt() * AF_WINDOW_STEP
         val next = (snapped + delta * AF_WINDOW_STEP).coerceIn(AF_WINDOW_MIN, AF_WINDOW_FULL)
         if (next == current) return // fondo scala: no-op, niente giro di rete
-        applyFocusParams(window = afWindowForSize(next), describe = { afWindowDescription(it.afwindow) })
+        val window = afWindowForSize(next)
+        applyFocusParams(afwindow_control, "finestra", afWindowLabel(window), window = window,
+            describe = { afWindowDescription(it.afwindow) })
     }
 
     // Cambia un parametro della ricerca lasciando invariato il modo. Il modo va comunque
@@ -860,13 +946,22 @@ class Window(private val context: Context) {
     // dal valore richiesto: se il server avesse applicato altro, il messaggio direbbe il
     // vero. I pulsanti restano spenti per tutto il giro di rete, che sul bridge seriale
     // puo' durare secondi, altrimenti si accodano richieste a ogni tocco ripetuto.
+    // In Manuale il modo rispedito e' "manual": il plugin blocca la lente dov'e' (innocuo)
+    // e memorizza i parametri, che il prossimo AF-S usera'. Per questo la ricerca si puo'
+    // preparare in ogni modo. [control] e [label] servono a mostrare subito il valore
+    // chiesto con "…" finche' la camera non lo conferma.
     private fun applyFocusParams(
+        control: FrameLayout,
+        what: String,
+        label: String,
         range: String? = null,
         speed: String? = null,
         window: List<Double>? = null,
         describe: (settings) -> String,
     ) {
         afParamsInFlight = true
+        afParamSending = "$what $label"
+        control.findViewById<TextView>(R.id.value).text = "$label…"
         updateControlsEnabled()
         val mode = settings.afmode
         Thread {
@@ -879,6 +974,8 @@ class Window(private val context: Context) {
             } else null
             Handler(Looper.getMainLooper()).post {
                 afParamsInFlight = false
+                afParamSending = null
+                focusOutcome = null
                 if (result.ok) {
                     if (refreshed != null) {
                         settings = refreshed
@@ -895,10 +992,11 @@ class Window(private val context: Context) {
                 } else {
                     // Il plugin RIFIUTA un parametro che la camera non espone invece di
                     // ignorarlo in silenzio: il messaggio del server dice quale e perche'.
-                    updateControlsEnabled()
-                    Toast.makeText(App.activity,
-                        result.message ?: "Parametro di fuoco non applicato",
-                        Toast.LENGTH_LONG).show()
+                    // updateValues() rimette il valore vero al posto di quello con "…".
+                    val msg = result.message ?: "Parametro di fuoco non applicato"
+                    focusOutcome = FocusOutcome(OutcomeKind.ERROR, "✖ $msg")
+                    updateValues()
+                    Toast.makeText(App.activity, msg, Toast.LENGTH_LONG).show()
                 }
             }
         }.start()
@@ -919,10 +1017,10 @@ class Window(private val context: Context) {
             updateControlsEnabled()
             return@Runnable
         }
-        if (!canEditSettings() || settingsPutsInFlight > 0) {
-            // Un altro PUT o un comando di fuoco e' ancora in volo: si riprova dopo,
+        if (requestInFlight()) {
+            // Un'altra richiesta e' ancora in volo: si riprova dopo,
             // invece di accodare un PUT che porterebbe valori vecchi.
-            focusModeDebounceHandler.postDelayed(sendPendingAeEnable, FOCUS_MODE_DEBOUNCE_MS)
+            tapDebounceHandler.postDelayed(sendPendingAeEnable, TAP_DEBOUNCE_MS)
             return@Runnable
         }
         pendingAeEnable = null
@@ -978,39 +1076,33 @@ class Window(private val context: Context) {
     private var afParamsInFlight = false
 
     // I parametri di ricerca e il modo viaggiano nello STESSO comando (focus_mode, con
-    // il modo sempre rispedito) e il lock del bridge non garantisce l'ordine di arrivo:
-    // un parametro inviato durante un cambio di modo si porterebbe dietro il modo
-    // vecchio e potrebbe annullare quello nuovo. Per questo i due si escludono: niente
-    // parametri mentre un cambio di modo e' in attesa o in volo, e viceversa.
-    private fun afParamsEditable() =
-        settingsLoaded && !focusModeInFlight && pendingFocusMode == null && !afParamsInFlight &&
-                settingsPutsInFlight == 0
+    // il modo sempre rispedito): un parametro inviato durante un cambio di modo si
+    // porterebbe dietro il modo vecchio. Si escludono perche' con isBusy() nessun
+    // comando parte mentre un altro e' in viaggio. Ammessi in ogni modo, anche Manuale.
+    private fun afParamsEditable() = settingsLoaded && !isBusy()
+
+    // Parametro di ricerca in invio, es. "range FULL", per la riga di stato della scheda.
+    private var afParamSending: String? = null
 
     // Vero mentre un cambio di modo e' in volo: il polling di stato richiama
     // updateControlsEnabled() e senza questo riattiverebbe il tasto a meta' attesa.
     private var focusModeInFlight = false
 
-    // Modo scelto con il pulsante ma non ancora inviato: si spedisce solo dopo
-    // FOCUS_MODE_DEBOUNCE_MS dall'ultimo tap, cosi' una serie di tap rapidi produce un
-    // solo comando (quello finale) invece di una transizione per ogni passaggio.
-    private var pendingFocusMode: String? = null
-    private val focusModeDebounceHandler = Handler(Looper.getMainLooper())
-    private val FOCUS_MODE_DEBOUNCE_MS = 1000L
+    // Debounce del tasto AUTO/MAN dell'esposizione (vedi btn_ae).
+    private val tapDebounceHandler = Handler(Looper.getMainLooper())
+    private val TAP_DEBOUNCE_MS = 1000L
 
-    private val sendPendingFocusMode: Runnable = Runnable {
-        val mode = pendingFocusMode ?: return@Runnable
-        if (settingsPutsInFlight > 0 || afParamsInFlight) {
-            // Un PUT dei settings o un parametro AF e' ancora in volo e porta il modo
-            // vecchio: si aspetta che finisca, altrimenti potrebbe annullare questo.
-            focusModeDebounceHandler.postDelayed(sendPendingFocusMode, FOCUS_MODE_DEBOUNCE_MS)
-            return@Runnable
-        }
-        pendingFocusMode = null
-        if (mode == settings.afmode) {
-            // Giro completo dei modi: si e' tornati al punto di partenza, niente da inviare.
-            updateControlsEnabled()
-            return@Runnable
-        }
+    // Modo chiesto e non ancora confermato: evidenziato subito, con "AF-S…" se e' un one-shot.
+    private var focusModeRequested: String? = null
+
+    // Esito dell'ultimo comando di fuoco, scritto nella scheda (null = niente da dire).
+    private var focusOutcome: FocusOutcome? = null
+
+    // Il modo toccato si invia SEMPRE, anche se coincide con settings.afmode: quella e'
+    // la copia locale, e sotto radio puo' non essere lo stato reale. Ripetere un modo e'
+    // innocuo (in MF il plugin blocca la lente dov'e'), e su AF-S rifa' la messa a fuoco.
+    private fun onFocusModeTapped(mode: String) {
+        if (!focusModeButtonEnabled()) return
         applyFocusMode(mode)
     }
 
@@ -1020,6 +1112,8 @@ class Window(private val context: Context) {
         // In AF-S il plugin risponde solo a ciclo di messa a fuoco concluso
         // (autofocus_cycle(wait=True)): l'attesa col tasto grigio e' normale.
         focusModeInFlight = true
+        focusModeRequested = mode
+        focusOutcome = null
         updateControlsEnabled()
         val previous = settings.afmode
         Thread {
@@ -1039,6 +1133,8 @@ class Window(private val context: Context) {
             }
             Handler(Looper.getMainLooper()).post {
                 focusModeInFlight = false
+                focusModeRequested = null
+                focusOutcome = focusModeOutcome(mode, result.ok, refreshed, result.message)
                 if (refreshed != null) {
                     settings = refreshed
                     settingsLoaded = true
@@ -1047,8 +1143,7 @@ class Window(private val context: Context) {
                 }
                 updateValues()
                 if (result.ok) {
-                    // Su un pulsante da 40dp la sigla da sola non basta a capire cosa si
-                    // e' appena attivato: il nome esteso lo dice senza ambiguita'.
+                    // Il nome esteso nel toast conferma cosa si e' appena attivato.
                     Toast.makeText(App.activity,
                         focusModeDescription(settings.afmode), Toast.LENGTH_SHORT).show()
                 } else {
@@ -1094,7 +1189,9 @@ class Window(private val context: Context) {
     }
 
     // Unico punto che decide quali controlli sono utilizzabili, invece di spargere
-    // isEnabled nei listener. Tre condizioni indipendenti:
+    // isEnabled nei listener. Quattro condizioni indipendenti:
+    //  - isBusy(): con una richiesta in viaggio (o una scelta AUTO/MAN in attesa di invio)
+    //    tutti i comandi si spengono e compare il cerchio busy_indicator;
     //  - settingsLoaded: prima del primo GET non c'e' niente di reale da modificare;
     //  - onAcquisition: il server rifiuta ogni PUT /camera/settings durante la
     //    registrazione, e lo scatto di prova andrebbe in conflitto con lo scatto
@@ -1106,16 +1203,12 @@ class Window(private val context: Context) {
                                saturation_control)) {
             setParamEnabled(control, editable)
         }
+        // La lente passa da PUT /camera/settings (bloccato in acquisizione) ed e' onorata
+        // solo in Manuale; negli altri modi mostra in grigio la posizione letta.
         setParamEnabled(lensposition_control, editable && settings.afmode == FOCUS_MANUAL)
 
-        // Esatto speculare di "Fuoco": la posizione della lente conta solo in manuale, i
-        // parametri della RICERCA solo quando e' la camera a cercare. In manuale il
-        // gruppo si nasconde invece di attenuarsi: non c'e' nulla da spiegare.
-        val afSearching = settings.afmode != FOCUS_MANUAL
-        af_search_group.visibility =
-            if (settingsLoaded && afSearching) View.VISIBLE else View.GONE
-        // Passano da exec come il modo di fuoco, quindi restano disponibili in
-        // acquisizione: la condizione non dipende da 'editable'.
+        // I parametri della ricerca passano da exec come il modo di fuoco, quindi restano
+        // disponibili in acquisizione: la condizione non dipende da 'editable'.
         val afParams = afParamsEditable()
         setParamEnabled(afrange_control, afParams)
         setParamEnabled(afspeed_control, afParams)
@@ -1129,7 +1222,7 @@ class Window(private val context: Context) {
         setParamEnabled(exposure_control, editable && settings.aeenable)
         setParamEnabled(exposuretime_control, editable && !settings.aeenable)
         setParamEnabled(gain_control, editable && !settings.aeenable)
-        btn_ae.isEnabled = editable
+        btn_ae.isEnabled = aeButtonEnabled()
         // Scritto qui (non in updateValues) per lo stesso motivo del tasto del fuoco:
         // il polling richiama updateControlsEnabled() e deve rispettare "..." e la
         // selezione in attesa di invio.
@@ -1139,33 +1232,82 @@ class Window(private val context: Context) {
             else -> if (settings.aeenable) "AUTO" else "MAN"
         }
 
-        // La sigla sui pulsanti si legge come azione ("premi per fare AF-C"), non come
-        // stato. L'indicazione di come e' impostato ADESSO sta quindi nelle etichette,
-        // che non sono cliccabili e quindi non possono essere fraintese. Serve anche a
-        // spiegare perche' certi +/- sono spenti: in AF-C "Fuoco" non ha effetto, e con
-        // l'esposizione automatica non ne hanno "Tempo di esposizione" e "ISO".
-        val focusTag = if (settingsLoaded) focusModeLabel(settings.afmode) else "--"
+        // Lo stato AUTO/MAN sta nell'etichetta, non cliccabile e quindi non fraintendibile:
+        // spiega anche perche' con AE attivo "Tempo di esposizione" e "ISO" sono spenti.
         val aeTag = if (!settingsLoaded) "--" else if (settings.aeenable) "AUTO" else "MAN"
-        lensposition_control.findViewById<TextView>(R.id.label).text = "Fuoco · $focusTag"
         exposure_control.findViewById<TextView>(R.id.label).text = "Esposizione · $aeTag"
 
-        // Il fuoco passa da exec, non dai settings: resta disponibile in acquisizione.
-        btn_autofocus.isEnabled = settingsLoaded && !focusModeInFlight && !afParamsInFlight &&
-                settingsPutsInFlight == 0
-        // Il modo corrente sul pulsante va scritto QUI e non in updateValues(), che esce
-        // in anticipo finche' le impostazioni non sono arrivate: in quel caso restava il
-        // testo del layout, che sembrava uno stato ("AF") senza esserlo. Serve anche a
-        // capire perche' i +/- di "Fuoco" non rispondono: sono onorati solo in manuale.
-        btn_autofocus.text = when {
-            focusModeInFlight -> "..."
-            // Selezione in attesa di invio: si mostra subito, cosi' si vede dove si e'
-            // arrivati con i tap.
-            pendingFocusMode != null -> focusModeLabel(pendingFocusMode!!)
-            settingsLoaded -> focusModeLabel(settings.afmode)
-            else -> "--"
-        }
+        updateFocusPanel()
         btn_reset_settings.isEnabled = editable
-        btn_preview_image.isEnabled = settingsLoaded && !onAcquisition
+        btn_preview_image.isEnabled = settingsLoaded && !onAcquisition && !isBusy()
+        btn_start_acquisition.isEnabled = !isBusy()
+        busy_indicator.visibility = if (requestInFlight()) View.VISIBLE else View.GONE
+        userRequestActive = requestInFlight()
+    }
+
+    // Scheda Fuoco: il modo in uso (o quello appena chiesto) e' il pulsante pieno, la riga
+    // di stato dice cosa sta succedendo, sotto resta l'esito dell'ultimo comando.
+    // Chiamata da updateControlsEnabled(), quindi segue ogni cambio di stato.
+    private fun updateFocusPanel() {
+        val enabled = focusModeButtonEnabled()
+        val active = if (settingsLoaded) (focusModeRequested ?: settings.afmode) else null
+        styleFocusButton(btn_focus_mf, FOCUS_MANUAL, active, enabled)
+        styleFocusButton(btn_focus_afs, FOCUS_SINGLE, active, enabled)
+        styleFocusButton(btn_focus_afc, FOCUS_CONTINUOUS, active, enabled)
+        focus_status.text = focusStatusText()
+
+        val outcome = focusOutcome
+        focus_result.visibility = if (outcome == null) View.GONE else View.VISIBLE
+        if (outcome != null) {
+            focus_result.text = outcome.text
+            focus_result.setTextColor(when (outcome.kind) {
+                OutcomeKind.OK -> COLOR_OK
+                OutcomeKind.ERROR -> COLOR_ERROR
+                OutcomeKind.INFO -> Color.DKGRAY
+            })
+        }
+    }
+
+    private fun focusStatusText(): String {
+        val requested = focusModeRequested
+        val sending = afParamSending
+        return when {
+            !settingsLoaded -> "In attesa delle impostazioni dalla camera…"
+            requested == FOCUS_SINGLE -> "Messa a fuoco in corso con " + afSearchSummary(settings)
+            requested != null -> "Passaggio a ${focusModeName(requested)}…"
+            sending != null -> "Invio $sending alla camera…"
+            requestInFlight() -> "Attendere: richiesta in corso…"
+            else -> "In uso: ${focusModeName(settings.afmode)} · ${focusModeBehaviour(settings.afmode)}"
+        }
+    }
+
+    // Pulsante di un modo: sigla grande e nome piccolo sotto; pieno se e' il modo attivo.
+    // Su AF-S attivo il nome diventa l'azione disponibile ("tocca = rifai").
+    private fun styleFocusButton(button: Button, mode: String, active: String?, enabled: Boolean) {
+        val selected = mode == active
+        val oneShotRunning = selected && mode == FOCUS_SINGLE && focusModeRequested == FOCUS_SINGLE
+        val tag = focusModeLabel(mode) + if (oneShotRunning) "…" else ""
+        val sub = when {
+            oneShotRunning -> "in corso"
+            selected && mode == FOCUS_SINGLE -> "tocca = rifai"
+            else -> focusModeName(mode)
+        }
+        button.text = SpannableString("$tag\n$sub").apply {
+            setSpan(RelativeSizeSpan(0.7f), tag.length + 1, length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+        }
+        button.backgroundTintList = ColorStateList.valueOf(if (selected) COLOR_SELECTED else COLOR_UNSELECTED)
+        button.setTextColor(if (selected) Color.WHITE else COLOR_SELECTED)
+        button.isEnabled = enabled
+        button.alpha = if (enabled) 1.0f else 0.4f
+    }
+
+    // Badge WIFI/RADIO nella barra: collegamento usato dall'ultima richiesta riuscita
+    // (vedi RoutingInterceptor). Riguarda i comandi; la preview video passa dalla seriale.
+    private fun showLink(link: Link) {
+        val wifi = link == Link.WIFI
+        link_badge.text = if (wifi) "WIFI" else "RADIO"
+        link_badge.setBackgroundColor(if (wifi) COLOR_OK else COLOR_RADIO)
+        link_badge.visibility = View.VISIBLE
     }
 
     private fun setParamEnabled(control: FrameLayout, enabled: Boolean) {
@@ -1191,7 +1333,7 @@ class Window(private val context: Context) {
             body.visibility = LinearLayout.VISIBLE
             btn_collapse.setBackgroundResource(R.drawable.down)
         }
-        applyPreviewSize()
+        applyLayout()
         calculateSizeAndPosition(windowParams, windowWidth, currentCompactHeight())
         try {
             windowManager.updateViewLayout(rootView, windowParams)
@@ -1201,24 +1343,60 @@ class Window(private val context: Context) {
     }
 
     // Altezza della finestra compatta in base al pannello aperto (ignorata in fullscreen).
-    private fun currentCompactHeight(): Int {
-        val anyPanelOpen = settings_panel.visibility == FrameLayout.VISIBLE ||
-                acquisition_panel.visibility == FrameLayout.VISIBLE ||
-                other_panel.visibility == FrameLayout.VISIBLE
-        return if (anyPanelOpen) windowHeightMax else windowHeight
+    private fun currentCompactHeight(): Int = compactHeight(anyPanelOpen())
+
+    private fun anyPanelOpen() = panels().any { it.visibility == View.VISIBLE }
+
+    // Disposizione di preview e pannello, in tre casi:
+    //  - compatta: preview sopra (alta previewHeightCompact()), pannello sotto;
+    //  - tutto schermo con display verticale: uguale, ma la preview prende l'altezza libera;
+    //  - tutto schermo con display orizzontale: pannello a DESTRA della preview, largo come la
+    //    finestra compatta e alto quanto lo schermo. Con il pannello sotto, in orizzontale la
+    //    preview restava bassa e lo stream non diventava piu' grande aprendo i parametri.
+    // La proporzione dell'immagine la preserva il renderer (vedi SerialJpegPlayer.renderFrame).
+    private fun applyLayout() {
+        val dm = getCurrentDisplayMetrics()
+        val panelOpen = anyPanelOpen()
+        val sideBySide = isFullscreen && dm.widthPixels > dm.heightPixels
+        fun px(dp: Int) = (dp * dm.density).toInt()
+
+        content.orientation = if (sideBySide) LinearLayout.HORIZONTAL else LinearLayout.VERTICAL
+        // Corpo: a fianco del pannello prende tutta la larghezza rimasta (peso 1).
+        val bodyParams = body.layoutParams as LinearLayout.LayoutParams
+        bodyParams.width = if (sideBySide) 0 else MATCH
+        bodyParams.weight = if (sideBySide) 1f else 0f
+        body.layoutParams = bodyParams
+
+        panels_container.visibility = if (panelOpen) View.VISIBLE else View.GONE
+        setSize(panels_container, if (sideBySide) px(windowWidth) else MATCH, if (sideBySide) MATCH else WRAP)
+        // Le schede che scorrono usano tutta l'altezza quando stanno a destra.
+        val scrollHeight = if (sideBySide) MATCH else px(panelHeight)
+        setSize(settings_panel, MATCH, scrollHeight)
+        setSize(focus_panel, MATCH, scrollHeight)
+
+        val compact = px(previewHeightCompact(panelOpen))
+        val previewHeight = when {
+            sideBySide -> dm.heightPixels - px(barHeight + tabsHeight)
+            isFullscreen -> dm.heightPixels - px(barHeight + tabsHeight + (if (panelOpen) panelHeight else 0))
+            else -> compact
+        }.coerceAtLeast(px(MIN_PREVIEW_DP))
+        setSize(preview_container, MATCH, previewHeight)
     }
 
-    // La preview e' larga 150dp nel layout compatto: a tutto schermo va allargata,
-    // altrimenti si guadagna spazio senza vedere meglio. La proporzione dell'immagine
-    // la preserva il renderer (vedi SerialJpegPlayer.renderFrame), non questa misura.
-    private fun applyPreviewSize() {
-        val dm = getCurrentDisplayMetrics()
-        setSize(
-            preview_container,
-            if (isFullscreen) (dm.widthPixels * 0.5f).toInt()
-            else (previewWidthCompact * dm.density).toInt(),
-            MATCH,
-        )
+    // Lo stream ha cambiato dimensioni (o e' arrivato il primo frame): se cambiano le
+    // proporzioni si ridimensionano preview e finestra, cosi' l'immagine riempie la larghezza.
+    private fun onStreamFrameSize(width: Int, height: Int) {
+        if (width <= 0 || height <= 0) return
+        val aspect = (width.toDouble() / height).coerceIn(MIN_PREVIEW_ASPECT, MAX_PREVIEW_ASPECT)
+        if (Math.abs(aspect - previewAspect) < 0.01) return
+        previewAspect = aspect
+        applyLayout()
+        calculateSizeAndPosition(windowParams, windowWidth, currentCompactHeight())
+        try {
+            windowManager.updateViewLayout(rootView, windowParams)
+        } catch (e: Exception) {
+            Log.e("UCamera", "onStreamFrameSize: " + e.message, e)
+        }
     }
 
     private fun setSize(v: View, width: Int, height: Int) {
@@ -1256,11 +1434,9 @@ class Window(private val context: Context) {
     // gli altri, lasciando aperti polling, delegate seriali e la porta stessa.
     fun close() {
         runQuietly("stopStatusUpdates") { stopStatusUpdates() }
-        // Un cambio di modo ancora in attesa non deve partire su un api gia' chiuso.
-        runQuietly("focusModeDebounce") {
-            focusModeDebounceHandler.removeCallbacks(sendPendingFocusMode)
-            focusModeDebounceHandler.removeCallbacks(sendPendingAeEnable)
-            pendingFocusMode = null
+        // Un cambio AUTO/MAN ancora in attesa non deve partire su un api gia' chiuso.
+        runQuietly("tapDebounce") {
+            tapDebounceHandler.removeCallbacks(sendPendingAeEnable)
             pendingAeEnable = null
         }
         runQuietly("stopPreview") { stopPreview() }
@@ -1277,63 +1453,47 @@ class Window(private val context: Context) {
         }
     }
 
-    fun openAcquisition(){
-        // A tutto schermo l'apertura/chiusura dei pannelli non deve toccare le
-        // dimensioni della finestra, altrimenti la riporterebbe a quelle compatte.
-        if(acquisition_panel.visibility==FrameLayout.VISIBLE){
-            acquisition_panel.visibility=FrameLayout.GONE
-            other_panel.visibility=FrameLayout.GONE
-            windowParams.height=windowHeight;
-            calculateSizeAndPosition(windowParams,windowWidth,windowHeight);
-            windowManager.updateViewLayout(rootView,windowParams)
-        }else{
-            acquisition_panel.visibility=FrameLayout.VISIBLE
-            settings_panel.visibility=FrameLayout.GONE
-            other_panel.visibility=FrameLayout.GONE
-            calculateSizeAndPosition(windowParams,windowWidth,windowHeightMax);
-            windowManager.updateViewLayout(rootView,windowParams)
+    // Pannelli sotto la preview: ne e' aperto al massimo uno. Un tap sul pulsante del
+    // pannello gia' aperto lo chiude e la finestra torna compatta. A tutto schermo le
+    // dimensioni non cambiano (vedi calculateSizeAndPosition()).
+    private fun togglePanel(panel: FrameLayout) {
+        val open = panel.visibility != View.VISIBLE
+        for (p in panels()) {
+            p.visibility = if (open && p === panel) View.VISIBLE else View.GONE
         }
-
+        updateTabs()
+        applyLayout() // pannello sotto o a destra, e altezza della preview
+        calculateSizeAndPosition(windowParams, windowWidth, currentCompactHeight())
+        windowManager.updateViewLayout(rootView, windowParams)
     }
 
-    fun openConfig(){
-        // A tutto schermo l'apertura/chiusura dei pannelli non deve toccare le
-        // dimensioni della finestra, altrimenti la riporterebbe a quelle compatte.
-        if(settings_panel.visibility==FrameLayout.VISIBLE){
-            acquisition_panel.visibility=FrameLayout.GONE
-            settings_panel.visibility=FrameLayout.GONE
-            other_panel.visibility=FrameLayout.GONE
-            windowParams.height=windowHeight;
-            calculateSizeAndPosition(windowParams,windowWidth,windowHeight);
-            windowManager.updateViewLayout(rootView,windowParams)
-        }else{
-            settings_panel.visibility=FrameLayout.VISIBLE
-            other_panel.visibility=FrameLayout.GONE
-            acquisition_panel.visibility=FrameLayout.GONE
-            calculateSizeAndPosition(windowParams,windowWidth,windowHeightMax);
-            windowManager.updateViewLayout(rootView,windowParams)
-        }
+    // Ogni scheda con il suo pannello, nell'ordine della riga sotto la preview.
+    private fun tabs() = listOf(
+        btn_open_acquisition to acquisition_panel,
+        btn_open_config to settings_panel,
+        btn_open_focus to focus_panel,
+        btn_open_other to other_panel,
+    )
 
+    private fun panels() = tabs().map { it.second }
+
+    // La scheda del pannello aperto e' piu' scura con il testo ambra, le altre restano viola.
+    private fun updateTabs() {
+        for ((button, panel) in tabs()) {
+            val selected = panel.visibility == View.VISIBLE
+            button.backgroundTintList =
+                ColorStateList.valueOf(if (selected) COLOR_TAB_SELECTED else COLOR_SELECTED)
+            button.setTextColor(if (selected) COLOR_TAB_TEXT_SELECTED else Color.WHITE)
+        }
     }
 
-    fun openOther(){
-        // A tutto schermo l'apertura/chiusura dei pannelli non deve toccare le
-        // dimensioni della finestra, altrimenti la riporterebbe a quelle compatte.
-        if(other_panel.visibility==FrameLayout.VISIBLE){
-            acquisition_panel.visibility=FrameLayout.GONE
-            settings_panel.visibility=FrameLayout.GONE
-            other_panel.visibility=FrameLayout.GONE
-            calculateSizeAndPosition(windowParams,windowWidth,windowHeight);
-            windowManager.updateViewLayout(rootView,windowParams)
-        }else{
-            other_panel.visibility=FrameLayout.VISIBLE
-            acquisition_panel.visibility=FrameLayout.GONE
-            settings_panel.visibility=FrameLayout.GONE
-            calculateSizeAndPosition(windowParams,windowWidth,windowHeightMax);
-            windowManager.updateViewLayout(rootView,windowParams)
-        }
+    fun openAcquisition() = togglePanel(acquisition_panel)
 
-    }
+    fun openConfig() = togglePanel(settings_panel)
+
+    fun openFocus() = togglePanel(focus_panel)
+
+    fun openOther() = togglePanel(other_panel)
 
     @RequiresApi(Build.VERSION_CODES.O)
     fun startAcquisition(video: Boolean=false){
@@ -1342,8 +1502,10 @@ class Window(private val context: Context) {
        // (puo' impiegare diversi secondi sul bridge seriale/radio, ora anche in coda
        // dietro al lock di SerialBridge) non spammano il server, e il pulsante non
        // sembra bloccato/rotto nell'attesa.
-       btn_start_acquisition.isEnabled = false
+       if (isBusy()) return // un'altra richiesta e' in volo: il pulsante e' gia' spento
+       acquisitionCommandInFlight = true
        btn_start_acquisition.text = if (onAcquisition) "Fermando..." else "Iniziando..."
+       updateControlsEnabled()
        // Le chiamate api.* sono sincrone (Retrofit .execute()) e possono impiegare
        // diversi secondi sul bridge seriale/radio: girate su un thread apposito per
        // non bloccare il main thread (rischio ANR, vedi timeout SerialBridge).
@@ -1407,7 +1569,10 @@ class Window(private val context: Context) {
            }
          } finally {
              remoteStateIgnoredUntil = System.currentTimeMillis() + STATE_GRACE_MS
-             Handler(Looper.getMainLooper()).post { btn_start_acquisition.isEnabled = true }
+             Handler(Looper.getMainLooper()).post {
+                 acquisitionCommandInFlight = false
+                 updateControlsEnabled()
+             }
          }
        }.start()
     }
@@ -1468,7 +1633,9 @@ class Window(private val context: Context) {
     // una sola volta, restando sull'indirizzo iniziale.
     private fun startStatusUpdates(initial: AcquisitionStatus?) {
         stopStatusUpdates()
-        val polling = PollingStatusSource(api, statusListener, isPaused = { captureInFlight })
+        // Il polling salta i giri mentre un comando dell'utente e' in viaggio (scatto di
+        // prova compreso): sotto radio avrebbero la precedenza sul bridge e lo ritarderebbero.
+        val polling = PollingStatusSource(api, statusListener, isPaused = { userRequestActive })
         polling.trackDataset(initial?.takeIf { it.running }?.datasetId)
         val live = SocketIoStatusSource("http://$remote_host:$remote_port/", statusListener)
         pollingStatus = polling
@@ -1493,6 +1660,7 @@ class Window(private val context: Context) {
 
         api= Webserver();
         api.init("http://"+remote_host+":"+remote_port, serialPort, context)
+        api.linkListener = { link -> Handler(Looper.getMainLooper()).post { showLink(link) } }
 
         // getVersion()/getSettings() sono chiamate sincrone sul bridge seriale/radio
         // (fino a 20s di timeout, vedi SerialBridge): fuori dal main thread per
@@ -1599,7 +1767,9 @@ class Window(private val context: Context) {
         stopPreview()
         when (fpvPreviewMode) {
             FpvPreviewMode.JPEG_SERIAL -> {
-                serialJpegVideoPlayer = SerialJpegPlayer(serialPort, surface)
+                serialJpegVideoPlayer = SerialJpegPlayer(serialPort, surface) { w, h ->
+                    Handler(Looper.getMainLooper()).post { onStreamFrameSize(w, h) }
+                }
                 serialJpegVideoPlayer?.start()
             }
             FpvPreviewMode.SERIAL_H264 -> {
@@ -1652,6 +1822,15 @@ class Window(private val context: Context) {
         // Dopo uno start/stop lo stato riportato dal server si ignora ancora per questo
         // tempo: copre eventi Socket.IO e risposte di polling partiti prima del comando.
         const val STATE_GRACE_MS = 3_000L
+
+        // Colori della scheda Fuoco e del badge del collegamento.
+        val COLOR_SELECTED = Color.parseColor("#6200EE")   // colorPrimary del tema
+        val COLOR_UNSELECTED = Color.parseColor("#EDE7F6")
+        val COLOR_OK = Color.parseColor("#1F8A4C")
+        val COLOR_ERROR = Color.parseColor("#B3261E")
+        val COLOR_RADIO = Color.parseColor("#A15C00")
+        val COLOR_TAB_SELECTED = Color.parseColor("#3700B3") // colorPrimaryVariant del tema
+        val COLOR_TAB_TEXT_SELECTED = Color.parseColor("#FFB300")
     }
 
     @SuppressLint("ResourceAsColor")
